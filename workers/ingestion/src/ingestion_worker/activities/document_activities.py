@@ -127,9 +127,9 @@ async def parse_document(input: ParseDocumentInput) -> ParseDocumentOutput:
     This activity handles different document types:
     - PDF: Use Docling for extraction with optional OCR
     - Images: Use OCR via Docling
-    - Audio/Video: Use transcription (Parakeet/Whisper)
-    - HTML/Markdown: Direct text extraction
-    - Office docs: Use python-docx, openpyxl, etc.
+    - Audio/Video: Use transcription (Parakeet/Whisper) - not yet implemented
+    - HTML/Markdown: Direct text extraction via Docling
+    - Office docs: Use Docling (DOCX, PPTX, XLSX)
 
     Args:
         input: Parse input with document location and type
@@ -137,31 +137,97 @@ async def parse_document(input: ParseDocumentInput) -> ParseDocumentOutput:
     Returns:
         Parsed content with metadata
     """
-    activity.logger.info(f"Parsing document {input.document_id} of type {input.document_type}")
+    from ingestion_worker.activities.parsing import (
+        is_docling_supported,
+        parse_with_docling,
+    )
 
-    # TODO: Implement actual parsing using Docling, transcription services, etc.
-    # For now, return a placeholder
+    activity.logger.info(
+        "Parsing document",
+        extra={
+            "document_id": input.document_id,
+            "document_type": input.document_type,
+            "storage_bucket": input.storage_bucket,
+            "storage_key": input.storage_key,
+            "skip_ocr": input.skip_ocr,
+        },
+    )
 
-    # In real implementation:
-    # 1. Download file from MinIO
-    # 2. Based on document_type, use appropriate parser
-    # 3. For PDFs: Use Docling with OCR if needed
-    # 4. For images: Use Docling OCR
-    # 5. For audio/video: Use transcription service
-    # 6. Extract tables and images metadata
-    # 7. Return parsed content
+    # Check if Docling can handle this document type
+    if is_docling_supported(input.document_type):
+        # Use Docling for document parsing
+        activity.heartbeat("Starting Docling parsing")
 
-    # Heartbeat to indicate we're still working
-    activity.heartbeat()
+        try:
+            result = await parse_with_docling(
+                document_id=input.document_id,
+                storage_bucket=input.storage_bucket,
+                storage_key=input.storage_key,
+                document_type=input.document_type,
+                skip_ocr=input.skip_ocr,
+                enable_table_structure=True,
+            )
 
-    # Placeholder content
-    content = f"[Placeholder content for document {input.document_id}]"
+            activity.logger.info(
+                "Document parsed with Docling",
+                extra={
+                    "document_id": input.document_id,
+                    "page_count": result.get("page_count"),
+                    "word_count": result.get("word_count"),
+                    "tables_count": len(result.get("tables", [])),
+                    "images_count": len(result.get("images", [])),
+                },
+            )
+
+            # Use Markdown content as the primary content format
+            # This preserves structure better than plain text
+            content = result.get("content_markdown", "")
+
+            return ParseDocumentOutput(
+                content=content,
+                page_count=result.get("page_count"),
+                word_count=result.get("word_count"),
+                language=result.get("language"),
+                tables=result.get("tables", []),
+                images=result.get("images", []),
+            )
+
+        except Exception as e:
+            activity.logger.error(
+                "Docling parsing failed",
+                extra={"document_id": input.document_id, "error": str(e)},
+            )
+            raise RuntimeError(f"Failed to parse document with Docling: {e}") from e
+
+    # Handle audio/video types (not yet implemented - placeholder for future)
+    audio_video_types = {"audio", "video", "mp3", "wav", "mp4", "webm", "ogg"}
+    if input.document_type.lower() in audio_video_types:
+        activity.logger.warning(
+            "Audio/video transcription not yet implemented",
+            extra={"document_id": input.document_id, "document_type": input.document_type},
+        )
+        # TODO: Implement transcription using Parakeet/Whisper
+        # For now, return placeholder
+        return ParseDocumentOutput(
+            content=f"[Audio/video transcription pending for {input.document_id}]",
+            page_count=None,
+            word_count=0,
+            language=None,
+            tables=[],
+            images=[],
+        )
+
+    # Unknown document type - log warning and return empty
+    activity.logger.warning(
+        "Unsupported document type for parsing",
+        extra={"document_id": input.document_id, "document_type": input.document_type},
+    )
 
     return ParseDocumentOutput(
-        content=content,
-        page_count=1,
-        word_count=len(content.split()),
-        language="en",
+        content=f"[Unsupported document type: {input.document_type}]",
+        page_count=None,
+        word_count=0,
+        language=None,
         tables=[],
         images=[],
     )

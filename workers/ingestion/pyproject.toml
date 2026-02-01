@@ -14,6 +14,8 @@ dependencies = [
     "httpx>=0.27",
     "alexandria-core",
     "alexandria-db",
+    # Document processing
+    "docling>=2.70.0",
 ]
 
 [project.scripts]
@@ -28,6 +30,18 @@ dev = [
 ]
 youtube = [
     "yt-dlp>=2024.1",
+]
+# OCR support for scanned PDFs and images
+ocr = [
+    "docling[easyocr]",
+]
+# Alternative OCR engines
+ocr-tesseract = [
+    "docling[tesserocr]",
+]
+# macOS OCR (uses Vision framework)
+ocr-mac = [
+    "docling[ocrmac]",
 ]
 
 [build-system]

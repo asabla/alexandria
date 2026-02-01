@@ -13,11 +13,11 @@
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
 | Phase 0 | 89 | 48 | 0 | 0 |
-| Phase 1 | 92 | 38 | 0 | 0 |
+| Phase 1 | 92 | 45 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 86 | 0 | 0 |
+| **Total** | **393** | 93 | 0 | 0 |
 
 ---
 
@@ -471,13 +471,13 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E3-S1-T1 | Add Docling to worker dependencies | S | Pending | P1-E2-S2 |
-| P1-E3-S1-T2 | Implement process_with_docling activity | M | Pending | T1 |
-| P1-E3-S1-T3 | Configure OCR and table structure settings | S | Pending | T2 |
-| P1-E3-S1-T4 | Implement heartbeat during processing | S | Pending | T2 |
-| P1-E3-S1-T5 | Export to Markdown format | M | Pending | T2 |
-| P1-E3-S1-T6 | Export to JSON format | M | Pending | T2 |
-| P1-E3-S1-T7 | Write activity unit tests | M | Pending | T2-T6 |
+| P1-E3-S1-T1 | Add Docling to worker dependencies | S | Done | P1-E2-S2 |
+| P1-E3-S1-T2 | Implement process_with_docling activity | M | Done | T1 |
+| P1-E3-S1-T3 | Configure OCR and table structure settings | S | Done | T2 |
+| P1-E3-S1-T4 | Implement heartbeat during processing | S | Done | T2 |
+| P1-E3-S1-T5 | Export to Markdown format | M | Done | T2 |
+| P1-E3-S1-T6 | Export to JSON format | M | Done | T2 |
+| P1-E3-S1-T7 | Write activity unit tests | M | Done | T2-T6 |
 
 ---
 
