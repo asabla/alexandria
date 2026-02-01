@@ -37,7 +37,7 @@ class WorkerConfig:
     temporal_namespace: str = "default"
 
     # Task queue
-    task_queue: str = "ingestion-tasks"
+    task_queue: str = "ingestion"
 
     # Worker settings
     max_concurrent_activities: int = 10
@@ -156,7 +156,7 @@ def main() -> None:
     config = WorkerConfig(
         temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
         temporal_namespace=os.getenv("TEMPORAL_NAMESPACE", "default"),
-        task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "ingestion-tasks"),
+        task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "ingestion"),
         max_concurrent_activities=int(os.getenv("MAX_CONCURRENT_ACTIVITIES", "10")),
         max_concurrent_workflow_tasks=int(os.getenv("MAX_CONCURRENT_WORKFLOW_TASKS", "10")),
         debug=os.getenv("DEBUG", "false").lower() == "true",

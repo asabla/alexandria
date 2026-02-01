@@ -13,6 +13,7 @@ from alexandria_db import (
     QdrantClient,
     Neo4jClient,
     MeiliSearchClient,
+    TemporalClient,
 )
 
 
@@ -73,6 +74,7 @@ _minio_client: MinIOClient | None = None
 _qdrant_client: QdrantClient | None = None
 _neo4j_client: Neo4jClient | None = None
 _meilisearch_client: MeiliSearchClient | None = None
+_temporal_client: TemporalClient | None = None
 
 
 def get_minio_client(
@@ -130,11 +132,26 @@ def get_meilisearch_client(
     return _meilisearch_client
 
 
+async def get_temporal_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> TemporalClient:
+    """Get a cached Temporal client."""
+    global _temporal_client
+    if _temporal_client is None:
+        _temporal_client = await TemporalClient.connect(
+            target_host=settings.temporal_address,
+            namespace=settings.temporal_namespace,
+            default_task_queue="ingestion",
+        )
+    return _temporal_client
+
+
 # Type aliases for dependency injection
 MinIO = Annotated[MinIOClient, Depends(get_minio_client)]
 Qdrant = Annotated[QdrantClient, Depends(get_qdrant_client)]
 Neo4j = Annotated[Neo4jClient, Depends(get_neo4j_client)]
 MeiliSearch = Annotated[MeiliSearchClient, Depends(get_meilisearch_client)]
+Temporal = Annotated[TemporalClient, Depends(get_temporal_client)]
 
 
 # ============================================================

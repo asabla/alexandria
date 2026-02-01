@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from alexandria_api.config import Settings, get_settings
-from alexandria_api.dependencies import get_db_session, MinIO, Context
+from alexandria_api.dependencies import get_db_session, MinIO, Temporal, Context
 from alexandria_db import DocumentRepository, ChunkRepository, IngestionJobRepository
 from alexandria_db.models import DocumentModel, IngestionJobModel
 
@@ -277,6 +277,7 @@ async def upload_document(
     ctx: Context,
     db: Annotated[AsyncSession, Depends(get_db_session)],
     minio: MinIO,
+    temporal: Temporal,
     settings: Annotated[Settings, Depends(get_settings)],
     file: UploadFile = File(...),
     project_id: UUID | None = Form(default=None),
@@ -329,11 +330,12 @@ async def upload_document(
     # Upload to MinIO
     bucket = "documents"
     try:
-        await minio.upload_bytes(
+        await minio.ensure_bucket(bucket)
+        await minio.upload_object(
             bucket=bucket,
             key=storage_key,
             data=content,
-            content_type=file.content_type,
+            content_type=file.content_type or "application/octet-stream",
         )
     except Exception as e:
         raise HTTPException(
@@ -374,13 +376,32 @@ async def upload_document(
         )
         job = await job_repo.create(job)
 
-        # TODO: Start Temporal workflow for ingestion
-        # await temporal_client.start_workflow(
-        #     IngestDocumentWorkflow.run,
-        #     document.id,
-        #     id=workflow_id,
-        #     task_queue="ingestion",
-        # )
+        # Start Temporal workflow for ingestion
+        try:
+            handle = await temporal.start_workflow(
+                "DocumentIngestionWorkflow",
+                {
+                    "document_id": str(document.id),
+                    "tenant_id": str(ctx.tenant_id),
+                    "storage_bucket": bucket,
+                    "storage_key": storage_key,
+                    "source_filename": original_filename,
+                    "mime_type": file.content_type,
+                    "project_id": str(project_id) if project_id else None,
+                },
+                id=workflow_id,
+                task_queue="ingestion",
+            )
+            # Update job with run ID
+            job.workflow_run_id = handle.result_run_id
+            job.status = "running"
+            job = await job_repo.update(job)
+        except Exception as e:
+            # Log error but don't fail the upload
+            # The job can be retried later
+            job.status = "failed"
+            job.error_message = f"Failed to start workflow: {e}"
+            job = await job_repo.update(job)
 
     return UploadResponse(
         document=_document_to_response(document),
@@ -508,7 +529,7 @@ async def delete_document(
     if hard_delete:
         # Delete from MinIO
         try:
-            await minio.delete(document.storage_bucket, document.storage_key)
+            await minio.delete_object(document.storage_bucket, document.storage_key)
         except Exception:
             pass  # Ignore storage errors during deletion
 
@@ -570,6 +591,125 @@ async def get_document_jobs(
     return [_job_to_response(job) for job in jobs]
 
 
+class WorkflowStatusResponse(BaseModel):
+    """Workflow status response model."""
+
+    workflow_id: str
+    run_id: str | None
+    status: str
+    current_step: str | None = None
+    progress_percent: int | None = None
+
+
+@router.get("/{document_id}/jobs/{job_id}/status", response_model=WorkflowStatusResponse)
+async def get_job_workflow_status(
+    document_id: UUID,
+    job_id: UUID,
+    ctx: Context,
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+    temporal: Temporal,
+) -> WorkflowStatusResponse:
+    """
+    Get the real-time status of an ingestion job's workflow.
+
+    Queries Temporal directly for the current workflow state.
+    """
+    # Verify document exists
+    doc_repo = DocumentRepository(db, ctx.tenant_id)
+    document = await doc_repo.get_by_id(document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document not found: {document_id}",
+        )
+
+    # Get the job
+    job_repo = IngestionJobRepository(db, ctx.tenant_id)
+    job = await job_repo.get_by_id(job_id)
+    if job is None or job.document_id != document_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    try:
+        # Get workflow info from Temporal
+        workflow_info = await temporal.describe_workflow(job.workflow_id)
+
+        # Try to get detailed status via query if workflow is running
+        current_step = None
+        progress_percent = None
+        if workflow_info.status == "running":
+            try:
+                status_result = await temporal.query_workflow(
+                    job.workflow_id,
+                    "get_status",
+                )
+                if status_result:
+                    current_step = status_result.get("current_step")
+                    progress_percent = status_result.get("progress_percent")
+            except Exception:
+                pass  # Query may fail if workflow doesn't support it
+
+        return WorkflowStatusResponse(
+            workflow_id=workflow_info.workflow_id,
+            run_id=workflow_info.run_id,
+            status=workflow_info.status,
+            current_step=current_step,
+            progress_percent=progress_percent,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get workflow status: {e}",
+        )
+
+
+@router.post("/{document_id}/jobs/{job_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_job(
+    document_id: UUID,
+    job_id: UUID,
+    ctx: Context,
+    db: Annotated[AsyncSession, Depends(get_db_session)],
+    temporal: Temporal,
+) -> None:
+    """
+    Cancel a running ingestion job.
+
+    Sends a cancel signal to the Temporal workflow.
+    """
+    # Verify document exists
+    doc_repo = DocumentRepository(db, ctx.tenant_id)
+    document = await doc_repo.get_by_id(document_id)
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document not found: {document_id}",
+        )
+
+    # Get the job
+    job_repo = IngestionJobRepository(db, ctx.tenant_id)
+    job = await job_repo.get_by_id(job_id)
+    if job is None or job.document_id != document_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    try:
+        # Send cancel signal to workflow
+        await temporal.signal_workflow(job.workflow_id, "cancel")
+
+        # Update job status
+        job.status = "cancelling"
+        await job_repo.update(job)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cancel workflow: {e}",
+        )
+
+
 @router.get("/{document_id}/download")
 async def download_document(
     document_id: UUID,
@@ -615,6 +755,7 @@ async def reprocess_document(
     document_id: UUID,
     ctx: Context,
     db: Annotated[AsyncSession, Depends(get_db_session)],
+    temporal: Temporal,
 ) -> IngestionJobResponse:
     """
     Trigger reprocessing of a document.
@@ -648,12 +789,29 @@ async def reprocess_document(
     )
     job = await job_repo.create(job)
 
-    # TODO: Start Temporal workflow for ingestion
-    # await temporal_client.start_workflow(
-    #     IngestDocumentWorkflow.run,
-    #     document.id,
-    #     id=workflow_id,
-    #     task_queue="ingestion",
-    # )
+    # Start Temporal workflow for ingestion
+    try:
+        handle = await temporal.start_workflow(
+            "DocumentIngestionWorkflow",
+            {
+                "document_id": str(document.id),
+                "tenant_id": str(ctx.tenant_id),
+                "storage_bucket": document.storage_bucket,
+                "storage_key": document.storage_key,
+                "source_filename": document.source_filename,
+                "mime_type": document.mime_type,
+                "force_reprocess": True,
+            },
+            id=workflow_id,
+            task_queue="ingestion",
+        )
+        # Update job with run ID
+        job.workflow_run_id = handle.result_run_id
+        job.status = "running"
+        job = await job_repo.update(job)
+    except Exception as e:
+        job.status = "failed"
+        job.error_message = f"Failed to start workflow: {e}"
+        job = await job_repo.update(job)
 
     return _job_to_response(job)

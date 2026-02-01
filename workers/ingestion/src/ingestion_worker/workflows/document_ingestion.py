@@ -14,6 +14,7 @@ The workflow orchestrates all activities needed to process a document:
 9. Build knowledge graph (Neo4j)
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
@@ -22,6 +23,34 @@ from uuid import UUID
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+
+
+class DictObject:
+    """Helper to allow attribute-style access to dictionaries returned by activities."""
+
+    def __init__(self, d: dict):
+        self._d = d
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            return super().__getattribute__(name)
+        try:
+            value = self._d[name]
+            # Recursively wrap nested dicts
+            if isinstance(value, dict):
+                return DictObject(value)
+            # Don't wrap lists - keep them as raw data for passing to activities
+            return value
+        except KeyError:
+            raise AttributeError(f"No attribute '{name}'")
+
+    def __len__(self):
+        return len(self._d)
+
+    def raw(self) -> dict:
+        """Get the raw dictionary."""
+        return self._d
+
 
 # Import activity stubs - these will be defined later
 with workflow.unsafe.imports_passed_through():
@@ -436,16 +465,18 @@ class DocumentIngestionWorkflow:
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.CLASSIFYING, 5, "Classifying document type")
 
-            classification = await workflow.execute_activity(
-                "classify_document",
-                ClassifyDocumentInput(
-                    storage_bucket=input.storage_bucket,
-                    storage_key=input.storage_key,
-                    mime_type=input.mime_type,
-                    source_filename=input.source_filename,
-                ),
-                start_to_close_timeout=timedelta(minutes=2),
-                retry_policy=DEFAULT_RETRY_POLICY,
+            classification = DictObject(
+                await workflow.execute_activity(
+                    "classify_document",
+                    ClassifyDocumentInput(
+                        storage_bucket=input.storage_bucket,
+                        storage_key=input.storage_key,
+                        mime_type=input.mime_type,
+                        source_filename=input.source_filename,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=2),
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
             )
             log.info(f"Document classified as {classification.document_type}")
 
@@ -455,18 +486,20 @@ class DocumentIngestionWorkflow:
                 IngestionStep.PARSING, 10, f"Parsing {classification.document_type} document"
             )
 
-            parsed = await workflow.execute_activity(
-                "parse_document",
-                ParseDocumentInput(
-                    document_id=input.document_id,
-                    storage_bucket=input.storage_bucket,
-                    storage_key=input.storage_key,
-                    document_type=classification.document_type,
-                    skip_ocr=input.skip_ocr,
-                ),
-                start_to_close_timeout=timedelta(minutes=30),  # OCR can be slow
-                heartbeat_timeout=timedelta(minutes=2),
-                retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+            parsed = DictObject(
+                await workflow.execute_activity(
+                    "parse_document",
+                    ParseDocumentInput(
+                        document_id=input.document_id,
+                        storage_bucket=input.storage_bucket,
+                        storage_key=input.storage_key,
+                        document_type=classification.document_type,
+                        skip_ocr=input.skip_ocr,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=30),  # OCR can be slow
+                    heartbeat_timeout=timedelta(minutes=2),
+                    retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                )
             )
             log.info(f"Document parsed: {parsed.word_count} words, {parsed.page_count} pages")
 
@@ -474,17 +507,19 @@ class DocumentIngestionWorkflow:
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.CHUNKING, 35, "Splitting document into chunks")
 
-            chunked = await workflow.execute_activity(
-                "chunk_document",
-                ChunkDocumentInput(
-                    document_id=input.document_id,
-                    tenant_id=input.tenant_id,
-                    content=parsed.content,
-                    chunk_size=input.chunk_size,
-                    chunk_overlap=input.chunk_overlap,
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=DEFAULT_RETRY_POLICY,
+            chunked = DictObject(
+                await workflow.execute_activity(
+                    "chunk_document",
+                    ChunkDocumentInput(
+                        document_id=input.document_id,
+                        tenant_id=input.tenant_id,
+                        content=parsed.content,
+                        chunk_size=input.chunk_size,
+                        chunk_overlap=input.chunk_overlap,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
             )
             self._chunks = chunked.chunks
             self._status.chunks_created = chunked.total_chunks
@@ -498,16 +533,18 @@ class DocumentIngestionWorkflow:
                 f"Generating embeddings for {chunked.total_chunks} chunks",
             )
 
-            embeddings_result = await workflow.execute_activity(
-                "generate_embeddings",
-                GenerateEmbeddingsInput(
-                    document_id=input.document_id,
-                    tenant_id=input.tenant_id,
-                    chunks=chunked.chunks,
-                ),
-                start_to_close_timeout=timedelta(minutes=15),
-                heartbeat_timeout=timedelta(minutes=2),
-                retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+            embeddings_result = DictObject(
+                await workflow.execute_activity(
+                    "generate_embeddings",
+                    GenerateEmbeddingsInput(
+                        document_id=input.document_id,
+                        tenant_id=input.tenant_id,
+                        chunks=chunked.chunks,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=15),
+                    heartbeat_timeout=timedelta(minutes=2),
+                    retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                )
             )
             self._embeddings = embeddings_result.embeddings
             log.info(
@@ -518,17 +555,19 @@ class DocumentIngestionWorkflow:
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.INDEXING_VECTOR, 60, "Indexing in vector database")
 
-            vector_indexed = await workflow.execute_activity(
-                "index_vector",
-                IndexVectorInput(
-                    document_id=input.document_id,
-                    tenant_id=input.tenant_id,
-                    project_id=input.project_id,
-                    chunks=chunked.chunks,
-                    embeddings=embeddings_result.embeddings,
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=DEFAULT_RETRY_POLICY,
+            vector_indexed = DictObject(
+                await workflow.execute_activity(
+                    "index_vector",
+                    IndexVectorInput(
+                        document_id=input.document_id,
+                        tenant_id=input.tenant_id,
+                        project_id=input.project_id,
+                        chunks=chunked.chunks,
+                        embeddings=embeddings_result.embeddings,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
             )
             log.info(
                 f"Indexed {vector_indexed.indexed_count} vectors in {vector_indexed.collection_name}"
@@ -538,43 +577,47 @@ class DocumentIngestionWorkflow:
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.INDEXING_FULLTEXT, 65, "Indexing in fulltext search")
 
-            fulltext_indexed = await workflow.execute_activity(
-                "index_fulltext",
-                IndexFulltextInput(
-                    document_id=input.document_id,
-                    tenant_id=input.tenant_id,
-                    project_id=input.project_id,
-                    title=input.source_filename or f"Document {input.document_id}",
-                    content=parsed.content,
-                    document_type=classification.document_type,
-                    metadata=input.metadata,
-                ),
-                start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=DEFAULT_RETRY_POLICY,
+            fulltext_indexed = DictObject(
+                await workflow.execute_activity(
+                    "index_fulltext",
+                    IndexFulltextInput(
+                        document_id=input.document_id,
+                        tenant_id=input.tenant_id,
+                        project_id=input.project_id,
+                        title=input.source_filename or f"Document {input.document_id}",
+                        content=parsed.content,
+                        document_type=classification.document_type,
+                        metadata=input.metadata,
+                    ),
+                    start_to_close_timeout=timedelta(minutes=5),
+                    retry_policy=DEFAULT_RETRY_POLICY,
+                )
             )
             log.info(f"Fulltext indexed: {fulltext_indexed.indexed}")
 
             # Entity extraction (if not skipped)
-            entities_output = ExtractEntitiesOutput(entities=[])
-            relationships_output = ExtractRelationshipsOutput(relationships=[])
-            graph_output = BuildGraphOutput(nodes_created=0, relationships_created=0)
+            entities_output = DictObject({"entities": []})
+            relationships_output = DictObject({"relationships": []})
+            graph_output = DictObject({"nodes_created": 0, "relationships_created": 0})
 
             if not input.skip_entity_extraction:
                 # Step 7: Extract entities (70-80%)
                 await self._check_cancelled_or_paused()
                 self._update_status(IngestionStep.EXTRACTING_ENTITIES, 70, "Extracting entities")
 
-                entities_output = await workflow.execute_activity(
-                    "extract_entities",
-                    ExtractEntitiesInput(
-                        document_id=input.document_id,
-                        tenant_id=input.tenant_id,
-                        content=parsed.content,
-                        chunks=chunked.chunks,
-                    ),
-                    start_to_close_timeout=timedelta(minutes=15),
-                    heartbeat_timeout=timedelta(minutes=2),
-                    retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                entities_output = DictObject(
+                    await workflow.execute_activity(
+                        "extract_entities",
+                        ExtractEntitiesInput(
+                            document_id=input.document_id,
+                            tenant_id=input.tenant_id,
+                            content=parsed.content,
+                            chunks=chunked.chunks,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=15),
+                        heartbeat_timeout=timedelta(minutes=2),
+                        retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                    )
                 )
                 self._entities = entities_output.entities
                 self._status.entities_extracted = len(entities_output.entities)
@@ -587,17 +630,19 @@ class DocumentIngestionWorkflow:
                         IngestionStep.EXTRACTING_RELATIONSHIPS, 85, "Extracting relationships"
                     )
 
-                    relationships_output = await workflow.execute_activity(
-                        "extract_relationships",
-                        ExtractRelationshipsInput(
-                            document_id=input.document_id,
-                            tenant_id=input.tenant_id,
-                            content=parsed.content,
-                            entities=entities_output.entities,
-                        ),
-                        start_to_close_timeout=timedelta(minutes=15),
-                        heartbeat_timeout=timedelta(minutes=2),
-                        retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                    relationships_output = DictObject(
+                        await workflow.execute_activity(
+                            "extract_relationships",
+                            ExtractRelationshipsInput(
+                                document_id=input.document_id,
+                                tenant_id=input.tenant_id,
+                                content=parsed.content,
+                                entities=entities_output.entities,
+                            ),
+                            start_to_close_timeout=timedelta(minutes=15),
+                            heartbeat_timeout=timedelta(minutes=2),
+                            retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                        )
                     )
                     self._relationships = relationships_output.relationships
                     self._status.relationships_extracted = len(relationships_output.relationships)
@@ -611,17 +656,19 @@ class DocumentIngestionWorkflow:
                 await self._check_cancelled_or_paused()
                 self._update_status(IngestionStep.BUILDING_GRAPH, 90, "Building knowledge graph")
 
-                graph_output = await workflow.execute_activity(
-                    "build_graph",
-                    BuildGraphInput(
-                        document_id=input.document_id,
-                        tenant_id=input.tenant_id,
-                        project_id=input.project_id,
-                        entities=entities_output.entities,
-                        relationships=relationships_output.relationships,
-                    ),
-                    start_to_close_timeout=timedelta(minutes=10),
-                    retry_policy=DEFAULT_RETRY_POLICY,
+                graph_output = DictObject(
+                    await workflow.execute_activity(
+                        "build_graph",
+                        BuildGraphInput(
+                            document_id=input.document_id,
+                            tenant_id=input.tenant_id,
+                            project_id=input.project_id,
+                            entities=entities_output.entities,
+                            relationships=relationships_output.relationships,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=10),
+                        retry_policy=DEFAULT_RETRY_POLICY,
+                    )
                 )
                 log.info(
                     f"Graph built: {graph_output.nodes_created} nodes, {graph_output.relationships_created} relationships"
@@ -668,7 +715,7 @@ class DocumentIngestionWorkflow:
                 indexed_graph=graph_output.nodes_created > 0,
             )
 
-        except workflow.CancelledError:
+        except asyncio.CancelledError:
             log.warning(f"Workflow cancelled for document {input.document_id}")
             self._update_status(
                 IngestionStep.CANCELLED, self._status.progress_percent, "Workflow cancelled"
@@ -731,12 +778,11 @@ class DocumentIngestionWorkflow:
 
     def _update_status(self, step: IngestionStep, progress: int, message: str) -> None:
         """Update the workflow status."""
-        from datetime import datetime, timezone
-
         self._status.current_step = step
         self._status.progress_percent = progress
         self._status.message = message
-        self._status.step_started_at = datetime.now(timezone.utc).isoformat()
+        # Use workflow.now() for deterministic time in workflows
+        self._status.step_started_at = workflow.now().isoformat()
 
         if self._status.started_at is None:
             self._status.started_at = self._status.step_started_at
@@ -744,7 +790,7 @@ class DocumentIngestionWorkflow:
     async def _check_cancelled_or_paused(self) -> None:
         """Check if workflow should stop or pause."""
         if self._is_cancelled:
-            raise workflow.CancelledError("Workflow cancelled by signal")
+            raise asyncio.CancelledError("Workflow cancelled by signal")
 
         # Wait while paused
         while self._is_paused:

@@ -14,7 +14,7 @@ from alexandria_db.models import (
     IngestionJobModel,
     ProjectDocumentModel,
 )
-from alexandria_db.repositories.base import SoftDeleteRepository
+from alexandria_db.repositories.base import SoftDeleteRepository, BaseRepository
 
 
 class DocumentRepository(SoftDeleteRepository[DocumentModel]):
@@ -248,7 +248,7 @@ class ChunkRepository(SoftDeleteRepository[ChunkModel]):
         return count
 
 
-class IngestionJobRepository(SoftDeleteRepository[IngestionJobModel]):
+class IngestionJobRepository(BaseRepository[IngestionJobModel]):
     """Repository for ingestion job operations."""
 
     model_class = IngestionJobModel
