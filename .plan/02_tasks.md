@@ -12,12 +12,12 @@
 
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
-| Phase 0 | 89 | 0 | 0 | 0 |
+| Phase 0 | 89 | 13 | 0 | 0 |
 | Phase 1 | 92 | 0 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 0 | 0 | 0 |
+| **Total** | **393** | 13 | 0 | 0 |
 
 ---
 
@@ -27,15 +27,15 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E1-S1-T1 | Create root pyproject.toml with workspace configuration | S | Pending | - |
-| P0-E1-S1-T2 | Create .pre-commit-config.yaml with hooks | S | Pending | - |
-| P0-E1-S1-T3 | Create /api directory structure (src, tests, config) | S | Pending | T1 |
-| P0-E1-S1-T4 | Create /workers directory structure (ingestion, agent, query) | S | Pending | T1 |
-| P0-E1-S1-T5 | Create /frontend directory structure (templates, static) | S | Pending | T1 |
-| P0-E1-S1-T6 | Create /infra directory (docker, k8s, tilt) | S | Pending | T1 |
-| P0-E1-S1-T7 | Create /libs directory for shared packages | S | Pending | T1 |
-| P0-E1-S1-T8 | Write comprehensive README.md | M | Pending | T3-T7 |
-| P0-E1-S1-T9 | Configure .gitignore for Python, Node, IDE files | S | Pending | - |
+| P0-E1-S1-T1 | Create root pyproject.toml with workspace configuration | S | Done | - |
+| P0-E1-S1-T2 | Create .pre-commit-config.yaml with hooks | S | Done | - |
+| P0-E1-S1-T3 | Create /api directory structure (src, tests, config) | S | Done | T1 |
+| P0-E1-S1-T4 | Create /workers directory structure (ingestion, agent, query) | S | Done | T1 |
+| P0-E1-S1-T5 | Create /frontend directory structure (templates, static) | S | Done | T1 |
+| P0-E1-S1-T6 | Create /infra directory (docker, k8s, tilt) | S | Done | T1 |
+| P0-E1-S1-T7 | Create /libs directory for shared packages | S | Done | T1 |
+| P0-E1-S1-T8 | Write comprehensive README.md | M | Done | T3-T7 |
+| P0-E1-S1-T9 | Configure .gitignore for Python, Node, IDE files | S | Done | - |
 
 ---
 
@@ -43,10 +43,10 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E1-S2-T1 | Configure pyproject.toml with uv workspace | M | Pending | P0-E1-S1-T1 |
-| P0-E1-S2-T2 | Set up ruff configuration (linting + formatting) | S | Pending | T1 |
-| P0-E1-S2-T3 | Configure mypy with strict mode | S | Pending | T1 |
-| P0-E1-S2-T4 | Configure pytest and coverage settings | S | Pending | T1 |
+| P0-E1-S2-T1 | Configure pyproject.toml with uv workspace | M | Done | P0-E1-S1-T1 |
+| P0-E1-S2-T2 | Set up ruff configuration (linting + formatting) | S | Done | T1 |
+| P0-E1-S2-T3 | Configure mypy with strict mode | S | Done | T1 |
+| P0-E1-S2-T4 | Configure pytest and coverage settings | S | Done | T1 |
 | P0-E1-S2-T5 | Install pre-commit and set up hooks | S | Pending | P0-E1-S1-T2 |
 | P0-E1-S2-T6 | Create VS Code workspace settings | S | Pending | T2, T3 |
 | P0-E1-S2-T7 | Generate initial uv.lock file | S | Pending | T1 |
