@@ -53,7 +53,7 @@ from ingestion_worker.workflows.document_ingestion import (
 
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # =============================================================================
 # Test Fixtures
@@ -2160,3 +2160,200 @@ class TestResolveEntitiesMockActivity:
         assert result.same_as_relationships_created == 0
         assert result.entities_processed == 0
         assert result.match_details == []
+
+
+# =============================================================================
+# LLM Verification Tests
+# =============================================================================
+
+
+class TestEntityVerificationPrompt:
+    """Tests for the LLM verification prompt template."""
+
+    def test_prompt_format(self):
+        """Test prompt is properly formatted."""
+        from ingestion_worker.activities.extraction_activities import (
+            ENTITY_VERIFICATION_PROMPT,
+        )
+
+        prompt = ENTITY_VERIFICATION_PROMPT.format(
+            entity1_name="John Smith",
+            entity1_type="person",
+            entity2_name="J. Smith",
+            entity2_type="person",
+        )
+
+        assert "John Smith" in prompt
+        assert "J. Smith" in prompt
+        assert "person" in prompt
+        assert "SAME" in prompt
+        assert "DIFFERENT" in prompt
+        assert "UNCERTAIN" in prompt
+
+
+class TestCallLlmApi:
+    """Tests for _call_llm_api function."""
+
+    @pytest.mark.asyncio
+    async def test_successful_call(self):
+        """Test successful LLM API call."""
+        from ingestion_worker.activities.extraction_activities import _call_llm_api
+
+        # Mock httpx
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"choices": [{"message": {"content": "SAME"}}]}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = MagicMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_client_class.return_value = mock_client
+
+            result = await _call_llm_api(
+                prompt="Test prompt",
+                base_url="http://localhost:8000/v1",
+                api_key=None,
+                model="test-model",
+            )
+
+        assert result == "SAME"
+        mock_client.post.assert_called_once()
+
+
+class TestVerifyMatchWithLlm:
+    """Tests for _verify_match_with_llm function."""
+
+    @pytest.mark.asyncio
+    async def test_llm_confirms_match(self):
+        """Test LLM confirming a match."""
+        from ingestion_worker.activities.extraction_activities import (
+            _verify_match_with_llm,
+        )
+
+        with patch("ingestion_worker.activities.extraction_activities._call_llm_api") as mock_call:
+            mock_call.return_value = "SAME"
+
+            is_match, confidence, reason = await _verify_match_with_llm(
+                entity1_name="John Smith",
+                entity1_type="person",
+                entity2_name="J. Smith",
+                entity2_type="person",
+                base_url="http://test",
+                model="test",
+            )
+
+        assert is_match is True
+        assert confidence == 0.95
+        assert reason == "llm_verified"
+
+    @pytest.mark.asyncio
+    async def test_llm_rejects_match(self):
+        """Test LLM rejecting a match."""
+        from ingestion_worker.activities.extraction_activities import (
+            _verify_match_with_llm,
+        )
+
+        with patch("ingestion_worker.activities.extraction_activities._call_llm_api") as mock_call:
+            mock_call.return_value = "DIFFERENT"
+
+            is_match, confidence, reason = await _verify_match_with_llm(
+                entity1_name="John Smith",
+                entity1_type="person",
+                entity2_name="Jane Doe",
+                entity2_type="person",
+                base_url="http://test",
+                model="test",
+            )
+
+        assert is_match is False
+        assert confidence == 0.95
+        assert reason == "llm_rejected"
+
+    @pytest.mark.asyncio
+    async def test_llm_uncertain(self):
+        """Test LLM being uncertain."""
+        from ingestion_worker.activities.extraction_activities import (
+            _verify_match_with_llm,
+        )
+
+        with patch("ingestion_worker.activities.extraction_activities._call_llm_api") as mock_call:
+            mock_call.return_value = "UNCERTAIN"
+
+            is_match, confidence, reason = await _verify_match_with_llm(
+                entity1_name="Apple",
+                entity1_type="organization",
+                entity2_name="Apple Inc",
+                entity2_type="organization",
+                base_url="http://test",
+                model="test",
+            )
+
+        assert is_match is False
+        assert confidence == 0.5
+        assert reason == "llm_uncertain"
+
+    @pytest.mark.asyncio
+    async def test_llm_error_handling(self):
+        """Test graceful error handling when LLM fails."""
+        from ingestion_worker.activities.extraction_activities import (
+            _verify_match_with_llm,
+        )
+
+        with (
+            patch("ingestion_worker.activities.extraction_activities._call_llm_api") as mock_call,
+            patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity,
+        ):
+            mock_call.side_effect = Exception("API Error")
+            mock_activity.logger = MagicMock()
+
+            is_match, confidence, reason = await _verify_match_with_llm(
+                entity1_name="Test",
+                entity1_type="person",
+                entity2_name="Test2",
+                entity2_type="person",
+                base_url="http://test",
+                model="test",
+            )
+
+        assert is_match is False
+        assert confidence == 0.5
+        assert reason == "llm_error"
+        mock_activity.logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_uses_environment_variables(self):
+        """Test that environment variables are used as defaults."""
+        from ingestion_worker.activities.extraction_activities import (
+            LLM_API_KEY_ENV,
+            LLM_BASE_URL_ENV,
+            LLM_MODEL_ENV,
+            _verify_match_with_llm,
+        )
+
+        with (
+            patch("ingestion_worker.activities.extraction_activities._call_llm_api") as mock_call,
+            patch.dict(
+                "os.environ",
+                {
+                    LLM_BASE_URL_ENV: "http://env-url/v1",
+                    LLM_API_KEY_ENV: "env-key",
+                    LLM_MODEL_ENV: "env-model",
+                },
+            ),
+        ):
+            mock_call.return_value = "SAME"
+
+            await _verify_match_with_llm(
+                entity1_name="Test",
+                entity1_type="person",
+                entity2_name="Test",
+                entity2_type="person",
+            )
+
+        # Check that the mock was called with env values
+        call_kwargs = mock_call.call_args[1]
+        assert call_kwargs["base_url"] == "http://env-url/v1"
+        assert call_kwargs["api_key"] == "env-key"
+        assert call_kwargs["model"] == "env-model"

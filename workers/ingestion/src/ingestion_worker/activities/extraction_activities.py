@@ -1545,6 +1545,141 @@ async def build_graph_mock(input: BuildGraphInput) -> BuildGraphOutput:
 # Entity Resolution Activity
 # =============================================================================
 
+# Environment variables for LLM configuration
+LLM_BASE_URL_ENV = "VLLM_BASE_URL"
+LLM_API_KEY_ENV = "OPENAI_API_KEY"  # pragma: allowlist secret
+LLM_MODEL_ENV = "LLM_MODEL"
+DEFAULT_LLM_BASE_URL = "http://localhost:8000/v1"
+DEFAULT_LLM_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+
+# Prompt template for entity verification
+ENTITY_VERIFICATION_PROMPT = """You are an expert at entity resolution. Your task is to determine if two entity names refer to the same real-world entity.
+
+Entity 1: {entity1_name} (type: {entity1_type})
+Entity 2: {entity2_name} (type: {entity2_type})
+
+Consider:
+- Are these likely the same person/organization/location?
+- Could one be a nickname, abbreviation, or variant of the other?
+- Account for common name variations (John vs Jonathan, IBM vs International Business Machines)
+
+Respond with ONLY one of these options:
+- SAME: if you are confident they refer to the same entity
+- DIFFERENT: if you are confident they are different entities
+- UNCERTAIN: if you cannot determine with confidence
+
+Your response:"""
+
+
+async def _call_llm_api(
+    prompt: str,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    max_tokens: int = 50,
+    temperature: float = 0.0,
+) -> str:
+    """
+    Call the LLM API for chat completion.
+
+    Args:
+        prompt: The prompt to send
+        base_url: API base URL
+        api_key: Optional API key
+        model: Model name
+        max_tokens: Maximum tokens in response
+        temperature: Sampling temperature
+
+    Returns:
+        The model's response text
+    """
+    import httpx
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        headers=headers,
+        timeout=httpx.Timeout(30.0),
+    ) as client:
+        response = await client.post("/chat/completions", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+
+async def _verify_match_with_llm(
+    entity1_name: str,
+    entity1_type: str,
+    entity2_name: str,
+    entity2_type: str,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+) -> tuple[bool, float, str]:
+    """
+    Use LLM to verify if two entities are the same.
+
+    Args:
+        entity1_name: First entity name
+        entity1_type: First entity type
+        entity2_name: Second entity name
+        entity2_type: Second entity type
+        base_url: Optional LLM API base URL
+        api_key: Optional API key
+        model: Optional model name
+
+    Returns:
+        Tuple of (is_match, confidence, reason)
+        - is_match: True if LLM says they're the same
+        - confidence: 0.0-1.0 confidence score
+        - reason: "llm_verified", "llm_rejected", or "llm_uncertain"
+    """
+    # Use environment variables if not provided
+    base_url = base_url or os.environ.get(LLM_BASE_URL_ENV, DEFAULT_LLM_BASE_URL)
+    api_key = api_key or os.environ.get(LLM_API_KEY_ENV)
+    model = model or os.environ.get(LLM_MODEL_ENV, DEFAULT_LLM_MODEL)
+
+    prompt = ENTITY_VERIFICATION_PROMPT.format(
+        entity1_name=entity1_name,
+        entity1_type=entity1_type,
+        entity2_name=entity2_name,
+        entity2_type=entity2_type,
+    )
+
+    try:
+        response = await _call_llm_api(
+            prompt=prompt,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+        )
+
+        # Parse response
+        response_upper = response.upper().strip()
+
+        if "SAME" in response_upper and "DIFFERENT" not in response_upper:
+            return (True, 0.95, "llm_verified")
+        elif "DIFFERENT" in response_upper:
+            return (False, 0.95, "llm_rejected")
+        else:
+            # UNCERTAIN or unclear response
+            return (False, 0.5, "llm_uncertain")
+
+    except Exception as e:
+        # Log error but don't fail - fall back to name similarity only
+        activity.logger.warning(f"LLM verification failed: {e}")
+        return (False, 0.5, "llm_error")
+
 
 def _normalize_for_comparison(name: str) -> str:
     """
@@ -1959,24 +2094,51 @@ async def resolve_entities(input: ResolveEntitiesInput) -> ResolveEntitiesOutput
         candidates = _find_candidate_matches(entities, input.similarity_threshold)
         activity.logger.info(f"Found {len(candidates)} candidate matches")
 
-        # Step 3: Create SAME_AS relationships
-        activity.heartbeat("Creating SAME_AS relationships")
+        # Step 3: Process candidates and create SAME_AS relationships
+        activity.heartbeat("Processing candidate matches")
         matches_created = 0
+        llm_verified = 0
+        llm_rejected = 0
         match_details: list[EntityMatch] = []
 
-        for e1, e2, score, reason in candidates:
-            # Skip LLM verification for now (can be added later)
-            # if input.use_llm_verification and score < 0.95:
-            #     # Use LLM to verify ambiguous matches
-            #     pass
+        # Threshold for automatic acceptance vs LLM verification
+        high_confidence_threshold = 0.95
 
+        for i, (e1, e2, score, reason) in enumerate(candidates):
+            final_score = score
+            final_reason = reason
+
+            # For ambiguous cases, use LLM verification if enabled
+            if input.use_llm_verification and score < high_confidence_threshold:
+                activity.heartbeat(f"LLM verifying match {i + 1}/{len(candidates)}")
+
+                is_match, llm_confidence, llm_reason = await _verify_match_with_llm(
+                    entity1_name=e1["name"],
+                    entity1_type=e1.get("entity_type", "unknown"),
+                    entity2_name=e2["name"],
+                    entity2_type=e2.get("entity_type", "unknown"),
+                )
+
+                if llm_reason == "llm_verified":
+                    # LLM confirmed the match
+                    final_score = max(score, llm_confidence)
+                    final_reason = "llm_verified"
+                    llm_verified += 1
+                elif llm_reason == "llm_rejected":
+                    # LLM rejected the match - skip this candidate
+                    llm_rejected += 1
+                    activity.logger.debug(f"LLM rejected match: {e1['name']} vs {e2['name']}")
+                    continue
+                # For uncertain/error, fall through and use original score
+
+            # Create the SAME_AS relationship
             created = await _create_same_as_relationship(
                 client,
                 e1["id"],
                 e2["id"],
                 input.tenant_id,
-                score,
-                reason,
+                final_score,
+                final_reason,
             )
 
             if created:
@@ -1987,18 +2149,27 @@ async def resolve_entities(input: ResolveEntitiesInput) -> ResolveEntitiesOutput
                         entity1_name=e1["name"],
                         entity2_id=e2["id"],
                         entity2_name=e2["name"],
-                        similarity_score=score,
-                        match_reason=reason,
+                        similarity_score=final_score,
+                        match_reason=final_reason,
                     )
                 )
 
             # Heartbeat periodically
-            if matches_created % 10 == 0:
-                activity.heartbeat(f"Created {matches_created} SAME_AS relationships")
+            if (i + 1) % 10 == 0:
+                activity.heartbeat(
+                    f"Processed {i + 1}/{len(candidates)} candidates, "
+                    f"{matches_created} matches created"
+                )
 
-        activity.logger.info(
-            f"Entity resolution complete: {matches_created} SAME_AS relationships created"
-        )
+        if input.use_llm_verification:
+            activity.logger.info(
+                f"Entity resolution complete: {matches_created} SAME_AS relationships created "
+                f"(LLM verified: {llm_verified}, LLM rejected: {llm_rejected})"
+            )
+        else:
+            activity.logger.info(
+                f"Entity resolution complete: {matches_created} SAME_AS relationships created"
+            )
 
         return ResolveEntitiesOutput(
             matches_found=len(candidates),
