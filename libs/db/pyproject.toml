@@ -10,6 +10,7 @@ dependencies = [
     "qdrant-client>=1.7",
     "meilisearch>=0.30",
     "minio>=7.2",
+    "temporalio>=1.7",
     "pydantic>=2.6",
     "pydantic-settings>=2.1",
     "structlog>=24.1",

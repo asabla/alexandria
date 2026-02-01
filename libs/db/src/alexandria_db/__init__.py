@@ -12,6 +12,7 @@ from alexandria_db.clients import (
     QdrantClient,
     Neo4jClient,
     MeiliSearchClient,
+    TemporalClient,
 )
 from alexandria_db.repositories import (
     BaseRepository,
@@ -41,6 +42,7 @@ __all__ = [
     "QdrantClient",
     "Neo4jClient",
     "MeiliSearchClient",
+    "TemporalClient",
     # Repositories
     "BaseRepository",
     "TenantScopedRepository",
