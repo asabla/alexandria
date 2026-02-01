@@ -13,7 +13,7 @@ from alexandria_db.models import (
     RelationshipModel,
     ProjectEntityModel,
 )
-from alexandria_db.repositories.base import SoftDeleteRepository
+from alexandria_db.repositories.base import SoftDeleteRepository, TenantScopedRepository
 
 
 class EntityRepository(SoftDeleteRepository[EntityModel]):
@@ -202,15 +202,10 @@ class EntityRepository(SoftDeleteRepository[EntityModel]):
         return True
 
 
-class EntityMentionRepository(SoftDeleteRepository[EntityMentionModel]):
+class EntityMentionRepository(TenantScopedRepository[EntityMentionModel]):
     """Repository for entity mention operations."""
 
     model_class = EntityMentionModel
-
-    def __init__(self, session: AsyncSession, tenant_id: UUID):
-        """Initialize with session and tenant scope."""
-        super().__init__(session)
-        self.tenant_id = tenant_id
 
     async def get_by_entity(
         self,
@@ -249,7 +244,7 @@ class EntityMentionRepository(SoftDeleteRepository[EntityMentionModel]):
                 self.model_class.document_id == document_id,
                 self.model_class.tenant_id == self.tenant_id,
             )
-            .order_by(self.model_class.start_offset)
+            .order_by(self.model_class.start_char)
         )
         if offset:
             stmt = stmt.offset(offset)
@@ -269,7 +264,7 @@ class EntityMentionRepository(SoftDeleteRepository[EntityMentionModel]):
                 self.model_class.chunk_id == chunk_id,
                 self.model_class.tenant_id == self.tenant_id,
             )
-            .order_by(self.model_class.start_offset)
+            .order_by(self.model_class.start_char)
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()
@@ -288,15 +283,10 @@ class EntityMentionRepository(SoftDeleteRepository[EntityMentionModel]):
         return result.scalar() or 0
 
 
-class RelationshipRepository(SoftDeleteRepository[RelationshipModel]):
+class RelationshipRepository(TenantScopedRepository[RelationshipModel]):
     """Repository for relationship operations."""
 
     model_class = RelationshipModel
-
-    def __init__(self, session: AsyncSession, tenant_id: UUID):
-        """Initialize with session and tenant scope."""
-        super().__init__(session)
-        self.tenant_id = tenant_id
 
     async def get_by_entity(
         self,
