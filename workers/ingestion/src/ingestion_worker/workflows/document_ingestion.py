@@ -201,6 +201,37 @@ class ClassifyDocumentOutput:
 
 
 @dataclass
+class DownloadFileInput:
+    """Input for file download activity."""
+
+    document_id: str
+    tenant_id: str
+    source_url: str
+    storage_bucket: str
+    storage_key: str
+    headers: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: int = 300
+    max_file_size: int = 500 * 1024 * 1024  # 500MB
+    follow_redirects: bool = True
+    youtube_format: str = "bestaudio/best"
+    extract_audio_only: bool = False
+
+
+@dataclass
+class DownloadFileOutput:
+    """Output from file download activity."""
+
+    storage_bucket: str
+    storage_key: str
+    file_size: int
+    content_type: str | None
+    file_hash: str
+    source_type: str
+    original_filename: str | None = None
+    download_duration_seconds: float = 0.0
+
+
+@dataclass
 class ParseDocumentInput:
     """Input for document parsing activity."""
 
@@ -462,7 +493,48 @@ class DocumentIngestionWorkflow:
         log = workflow.logger
         log.info(f"Starting ingestion workflow for document {input.document_id}")
 
+        # Track current storage location (may change after download)
+        storage_bucket = input.storage_bucket
+        storage_key = input.storage_key
+        source_filename = input.source_filename
+        mime_type = input.mime_type
+
         try:
+            # Step 0: Download file if source_url is provided (0-5%)
+            if input.source_url:
+                await self._check_cancelled_or_paused()
+                self._update_status(
+                    IngestionStep.DOWNLOADING, 2, f"Downloading from {input.source_url}"
+                )
+
+                download_result = DictObject(
+                    await workflow.execute_activity(
+                        "download_file",
+                        DownloadFileInput(
+                            document_id=input.document_id,
+                            tenant_id=input.tenant_id,
+                            source_url=input.source_url,
+                            storage_bucket=input.storage_bucket,
+                            storage_key=input.storage_key,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=30),  # Downloads can be slow
+                        heartbeat_timeout=timedelta(minutes=2),
+                        retry_policy=SLOW_ACTIVITY_RETRY_POLICY,
+                    )
+                )
+                log.info(
+                    f"File downloaded: {download_result.file_size} bytes, "
+                    f"type: {download_result.source_type}"
+                )
+
+                # Update storage location and metadata from download
+                storage_bucket = download_result.storage_bucket
+                storage_key = download_result.storage_key
+                if download_result.original_filename:
+                    source_filename = download_result.original_filename
+                if download_result.content_type:
+                    mime_type = download_result.content_type
+
             # Step 1: Classify document (5%)
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.CLASSIFYING, 5, "Classifying document type")
@@ -471,10 +543,10 @@ class DocumentIngestionWorkflow:
                 await workflow.execute_activity(
                     "classify_document",
                     ClassifyDocumentInput(
-                        storage_bucket=input.storage_bucket,
-                        storage_key=input.storage_key,
-                        mime_type=input.mime_type,
-                        source_filename=input.source_filename,
+                        storage_bucket=storage_bucket,
+                        storage_key=storage_key,
+                        mime_type=mime_type,
+                        source_filename=source_filename,
                     ),
                     start_to_close_timeout=timedelta(minutes=2),
                     retry_policy=DEFAULT_RETRY_POLICY,
@@ -493,8 +565,8 @@ class DocumentIngestionWorkflow:
                     "parse_document",
                     ParseDocumentInput(
                         document_id=input.document_id,
-                        storage_bucket=input.storage_bucket,
-                        storage_key=input.storage_key,
+                        storage_bucket=storage_bucket,
+                        storage_key=storage_key,
                         document_type=classification.document_type,
                         skip_ocr=input.skip_ocr,
                     ),
