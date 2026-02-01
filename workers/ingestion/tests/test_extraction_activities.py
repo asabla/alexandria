@@ -16,10 +16,6 @@ Tests cover:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from ingestion_worker.activities.extraction_activities import (
@@ -28,24 +24,26 @@ from ingestion_worker.activities.extraction_activities import (
     MAX_ENTITY_LENGTH,
     MIN_ENTITY_LENGTH,
     MIN_RELATIONSHIP_CONFIDENCE,
-    RELATIONSHIP_TYPE_MAP,
     SPACY_LABEL_TO_ENTITY_TYPE,
-    WORK_VERBS,
     _build_entity_lookup,
     _calculate_relationship_confidence,
     _classify_verb_pattern,
     _deduplicate_relationships,
     _determine_relationship_type,
+    _entity_type_to_label,
     _extract_context,
     _extract_entities_from_chunk,
     _extract_relationships_from_sentence,
     _find_entity_in_span,
+    _generate_entity_id,
     _group_entity_mentions,
     _is_valid_entity,
     _map_spacy_label,
     _normalize_entity_name,
+    _relationship_type_to_label,
 )
 from ingestion_worker.workflows.document_ingestion import (
+    BuildGraphInput,
     ChunkInfo,
     EntityInfo,
     ExtractEntitiesInput,
@@ -53,6 +51,9 @@ from ingestion_worker.workflows.document_ingestion import (
     RelationshipInfo,
 )
 
+from dataclasses import dataclass, field
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 # =============================================================================
 # Test Fixtures
@@ -709,7 +710,6 @@ class TestExtractEntitiesActivity:
         assert len(result.entities) > 0
 
         # Should have extracted John Doe, Acme variants, and San Francisco
-        entity_names = {e.name.lower() for e in result.entities}
         entity_types = {e.entity_type for e in result.entities}
 
         assert "person" in entity_types
@@ -1647,3 +1647,297 @@ class TestExtractRelationshipsMockActivity:
             result = await extract_relationships_mock(input_data)
 
         assert result.relationships == []
+
+
+# =============================================================================
+# Graph Building Tests
+# =============================================================================
+
+
+class TestGenerateEntityId:
+    """Tests for entity ID generation."""
+
+    def test_generates_deterministic_id(self):
+        """Test that same inputs produce same ID."""
+        id1 = _generate_entity_id("tenant-1", "John Doe", "person")
+        id2 = _generate_entity_id("tenant-1", "John Doe", "person")
+        assert id1 == id2
+
+    def test_different_names_produce_different_ids(self):
+        """Test that different names produce different IDs."""
+        id1 = _generate_entity_id("tenant-1", "John Doe", "person")
+        id2 = _generate_entity_id("tenant-1", "Jane Smith", "person")
+        assert id1 != id2
+
+    def test_different_types_produce_different_ids(self):
+        """Test that different types produce different IDs."""
+        id1 = _generate_entity_id("tenant-1", "Apple", "organization")
+        id2 = _generate_entity_id("tenant-1", "Apple", "product")
+        assert id1 != id2
+
+    def test_different_tenants_produce_different_ids(self):
+        """Test that different tenants produce different IDs."""
+        id1 = _generate_entity_id("tenant-1", "John Doe", "person")
+        id2 = _generate_entity_id("tenant-2", "John Doe", "person")
+        assert id1 != id2
+
+    def test_normalizes_name_for_id(self):
+        """Test that name normalization is applied."""
+        id1 = _generate_entity_id("tenant-1", "John Doe", "person")
+        id2 = _generate_entity_id("tenant-1", "JOHN DOE", "person")
+        id3 = _generate_entity_id("tenant-1", "  john   doe  ", "person")
+        assert id1 == id2 == id3
+
+    def test_id_format(self):
+        """Test that ID has expected format."""
+        entity_id = _generate_entity_id("tenant-1", "John Doe", "person")
+        assert entity_id.startswith("ent_")
+        assert len(entity_id) == 28  # "ent_" + 24 hex chars
+
+
+class TestEntityTypeToLabel:
+    """Tests for entity type to Neo4j label conversion."""
+
+    def test_converts_person(self):
+        """Test person type conversion."""
+        assert _entity_type_to_label("person") == "Person"
+
+    def test_converts_organization(self):
+        """Test organization type conversion."""
+        assert _entity_type_to_label("organization") == "Organization"
+
+    def test_converts_location(self):
+        """Test location type conversion."""
+        assert _entity_type_to_label("location") == "Location"
+
+    def test_handles_uppercase_input(self):
+        """Test handles uppercase input."""
+        assert _entity_type_to_label("PERSON") == "Person"
+        assert _entity_type_to_label("Organization") == "Organization"
+
+    def test_unknown_type_defaults_to_entity(self):
+        """Test unknown types default to Entity."""
+        assert _entity_type_to_label("unknown") == "Entity"
+        assert _entity_type_to_label("custom_type") == "Entity"
+
+
+class TestRelationshipTypeToLabel:
+    """Tests for relationship type to Neo4j label conversion."""
+
+    def test_converts_to_uppercase(self):
+        """Test conversion to uppercase."""
+        assert _relationship_type_to_label("works_for") == "WORKS_FOR"
+        assert _relationship_type_to_label("located_in") == "LOCATED_IN"
+
+    def test_handles_already_uppercase(self):
+        """Test handles already uppercase input."""
+        assert _relationship_type_to_label("WORKS_FOR") == "WORKS_FOR"
+
+    def test_converts_spaces_to_underscores(self):
+        """Test spaces are converted to underscores."""
+        assert _relationship_type_to_label("works for") == "WORKS_FOR"
+
+
+class TestBuildGraphMockActivity:
+    """Tests for the mock graph building activity."""
+
+    @pytest.mark.asyncio
+    async def test_counts_entities_and_relationships(self, sample_entities):
+        """Test mock returns correct counts."""
+        from ingestion_worker.activities.extraction_activities import build_graph_mock
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = BuildGraphInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                project_id=None,
+                entities=sample_entities,
+                relationships=[
+                    RelationshipInfo(
+                        source_entity="John Doe",
+                        target_entity="Acme Corporation",
+                        relationship_type="works_for",
+                        evidence="John works at Acme",
+                        confidence=0.8,
+                    ),
+                ],
+            )
+
+            result = await build_graph_mock(input_data)
+
+        # 3 entities + (3 MENTIONED_IN + 1 relationship) = 4 relationships
+        assert result.nodes_created == 3
+        assert result.relationships_created == 4
+
+    @pytest.mark.asyncio
+    async def test_handles_empty_input(self):
+        """Test mock handles empty entities list."""
+        from ingestion_worker.activities.extraction_activities import build_graph_mock
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = BuildGraphInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                project_id=None,
+                entities=[],
+                relationships=[],
+            )
+
+            result = await build_graph_mock(input_data)
+
+        assert result.nodes_created == 0
+        assert result.relationships_created == 0
+
+
+class TestBuildGraphActivity:
+    """Tests for the build_graph activity with mocked Neo4j."""
+
+    @pytest.mark.asyncio
+    async def test_returns_zero_for_no_entities(self):
+        """Test activity returns zero counts when no entities provided."""
+        from ingestion_worker.activities.extraction_activities import build_graph
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = BuildGraphInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                project_id=None,
+                entities=[],
+                relationships=[],
+            )
+
+            result = await build_graph(input_data)
+
+        assert result.nodes_created == 0
+        assert result.relationships_created == 0
+
+    @pytest.mark.asyncio
+    async def test_creates_nodes_and_relationships(self, sample_entities):
+        """Test activity creates nodes and relationships with mocked client."""
+        from ingestion_worker.activities.extraction_activities import build_graph
+
+        # Create mock Neo4j client
+        mock_client = MagicMock()
+
+        # Make async methods return coroutines
+        async def mock_execute_query(*_args, **_kwargs):
+            return [{"e": MagicMock()}]
+
+        async def mock_create_doc(*_args, **_kwargs):
+            return MagicMock()
+
+        async def mock_create_mentioned(*_args, **_kwargs):
+            return MagicMock()
+
+        async def mock_create_rel(*_args, **_kwargs):
+            return MagicMock()
+
+        async def mock_close():
+            pass
+
+        mock_client.execute_query = mock_execute_query
+        mock_client.create_document_node = mock_create_doc
+        mock_client.create_mentioned_in_relationship = mock_create_mentioned
+        mock_client.create_relationship = mock_create_rel
+        mock_client.close = mock_close
+
+        # Patch where the import happens (inside the function)
+        mock_neo4j_class = MagicMock(return_value=mock_client)
+
+        with (
+            patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity,
+            patch.dict(
+                "sys.modules",
+                {"alexandria_db.clients": MagicMock(Neo4jClient=mock_neo4j_class)},
+            ),
+        ):
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = BuildGraphInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                project_id="project-789",
+                entities=sample_entities,
+                relationships=[
+                    RelationshipInfo(
+                        source_entity="John Doe",
+                        target_entity="Acme Corporation",
+                        relationship_type="works_for",
+                        evidence="John works at Acme",
+                        confidence=0.8,
+                    ),
+                ],
+            )
+
+            result = await build_graph(input_data)
+
+        # Should create nodes for all entities
+        assert result.nodes_created == 3
+        # Should create MENTIONED_IN + inter-entity relationships
+        assert result.relationships_created >= 1
+
+    @pytest.mark.asyncio
+    async def test_handles_dict_entities(self):
+        """Test activity handles entities passed as dicts."""
+        from ingestion_worker.activities.extraction_activities import build_graph
+
+        mock_client = MagicMock()
+
+        async def mock_execute_query(*_args, **_kwargs):
+            return [{"e": MagicMock()}]
+
+        async def mock_create_doc(*_args, **_kwargs):
+            return MagicMock()
+
+        async def mock_create_mentioned(*_args, **_kwargs):
+            return MagicMock()
+
+        async def mock_close():
+            pass
+
+        mock_client.execute_query = mock_execute_query
+        mock_client.create_document_node = mock_create_doc
+        mock_client.create_mentioned_in_relationship = mock_create_mentioned
+        mock_client.close = mock_close
+
+        mock_neo4j_class = MagicMock(return_value=mock_client)
+
+        with (
+            patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity,
+            patch.dict(
+                "sys.modules",
+                {"alexandria_db.clients": MagicMock(Neo4jClient=mock_neo4j_class)},
+            ),
+        ):
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            # Pass entities as dicts (as they might come from workflow)
+            input_data = BuildGraphInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                project_id=None,
+                entities=[
+                    {
+                        "name": "John Doe",
+                        "entity_type": "person",
+                        "confidence": 0.9,
+                        "mentions": [],
+                    },
+                ],
+                relationships=[],
+            )
+
+            result = await build_graph(input_data)
+
+        assert result.nodes_created == 1

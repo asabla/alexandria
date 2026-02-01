@@ -7,11 +7,6 @@ the knowledge graph.
 
 from __future__ import annotations
 
-import os
-import re
-import unicodedata
-from typing import TYPE_CHECKING, Any
-
 from temporalio import activity
 
 from ingestion_worker.workflows.document_ingestion import (
@@ -26,8 +21,12 @@ from ingestion_worker.workflows.document_ingestion import (
     RelationshipInfo,
 )
 
+import os
+import re
+import unicodedata
+from typing import TYPE_CHECKING, Any
+
 if TYPE_CHECKING:
-    import spacy
     from spacy.language import Language
     from spacy.tokens import Doc
 
@@ -419,7 +418,7 @@ def _group_entity_mentions(all_mentions: list[dict[str, Any]]) -> list[EntityInf
     # Convert to EntityInfo objects
     entities: list[EntityInfo] = []
 
-    for (normalized_name, entity_type), data in grouped.items():
+    for (_normalized_name, entity_type), data in grouped.items():
         # Calculate confidence based on mention count
         # More mentions = higher confidence (up to a cap)
         mention_count = len(data["mentions"])
@@ -799,13 +798,13 @@ def _deduplicate_relationships(
     # Convert to RelationshipInfo objects
     results: list[RelationshipInfo] = []
 
-    for (source_norm, target_norm, rel_type), occurrences in grouped.items():
+    for (_source_norm, _target_norm, rel_type), occurrences in grouped.items():
         # Use the first occurrence for canonical names and evidence
         first = occurrences[0]
 
-        # Collect all evidence texts
+        # Collect all evidence texts (use first one)
         evidence_texts = list({r["evidence"] for r in occurrences})
-        evidence = evidence_texts[0] if len(evidence_texts) == 1 else evidence_texts[0]
+        evidence = evidence_texts[0]
 
         confidence = _calculate_relationship_confidence(first, len(occurrences))
 
@@ -1110,13 +1109,308 @@ async def extract_relationships_mock(
     return ExtractRelationshipsOutput(relationships=relationships)
 
 
+# =============================================================================
+# Graph Building Constants
+# =============================================================================
+
+# Environment variables for Neo4j configuration
+NEO4J_URI_ENV = "NEO4J_URI"
+NEO4J_USER_ENV = "NEO4J_USER"
+NEO4J_PASSWORD_ENV = "NEO4J_PASSWORD"  # pragma: allowlist secret
+NEO4J_DATABASE_ENV = "NEO4J_DATABASE"
+
+# Default values
+DEFAULT_NEO4J_URI = "bolt://localhost:7687"
+DEFAULT_NEO4J_USER = "neo4j"
+DEFAULT_NEO4J_PASSWORD = "password"  # pragma: allowlist secret
+DEFAULT_NEO4J_DATABASE = "neo4j"
+
+
+def _generate_entity_id(tenant_id: str, name: str, entity_type: str) -> str:
+    """
+    Generate a deterministic entity ID for idempotent node creation.
+
+    Uses normalized name and type to ensure the same entity always
+    gets the same ID, enabling proper MERGE behavior.
+
+    Args:
+        tenant_id: Tenant identifier
+        name: Entity name
+        entity_type: Entity type
+
+    Returns:
+        Deterministic entity ID string
+    """
+    import hashlib
+
+    # Normalize name for consistent IDs
+    normalized_name = _normalize_entity_name(name)
+    id_string = f"{tenant_id}:{entity_type}:{normalized_name}"
+    hash_val = hashlib.sha256(id_string.encode()).hexdigest()
+    return f"ent_{hash_val[:24]}"
+
+
+def _entity_type_to_label(entity_type: str) -> str:
+    """
+    Convert entity type to Neo4j node label.
+
+    Args:
+        entity_type: Entity type string (e.g., "person", "organization")
+
+    Returns:
+        Neo4j label string (e.g., "Person", "Organization")
+    """
+    # Map to proper capitalized labels
+    label_map = {
+        "person": "Person",
+        "organization": "Organization",
+        "location": "Location",
+        "date": "Date",
+        "event": "Event",
+        "money": "Money",
+        "law": "Law",
+        "product": "Product",
+        "document": "Document",
+        "unknown": "Entity",
+    }
+    return label_map.get(entity_type.lower(), "Entity")
+
+
+def _relationship_type_to_label(relationship_type: str) -> str:
+    """
+    Convert relationship type to Neo4j relationship label.
+
+    Args:
+        relationship_type: Relationship type string (e.g., "works_for")
+
+    Returns:
+        Neo4j relationship label (e.g., "WORKS_FOR")
+    """
+    # Convert to uppercase with underscores (Neo4j convention)
+    return relationship_type.upper().replace(" ", "_")
+
+
+async def _create_entity_nodes(
+    client: Any,
+    entities: list[EntityInfo] | list[dict[str, Any]],
+    _document_id: str,
+    tenant_id: str,
+    _project_id: str | None,
+) -> tuple[int, dict[str, str]]:
+    """
+    Create or merge entity nodes in Neo4j.
+
+    Args:
+        client: Neo4j client instance
+        entities: List of entities to create
+        _document_id: Document ID (reserved for future use)
+        tenant_id: Tenant ID
+        _project_id: Optional project ID (reserved for future use)
+
+    Returns:
+        Tuple of (nodes_created, entity_id_map)
+    """
+    nodes_created = 0
+    entity_id_map: dict[str, str] = {}  # Maps entity name -> entity_id
+
+    for entity in entities:
+        # Handle both EntityInfo and dict
+        if isinstance(entity, dict):
+            name = entity.get("name", "")
+            entity_type = entity.get("entity_type", "unknown")
+            confidence = entity.get("confidence", 0.5)
+            mentions = entity.get("mentions", [])
+        else:
+            name = entity.name
+            entity_type = entity.entity_type
+            confidence = entity.confidence
+            mentions = entity.mentions
+
+        if not name:
+            continue
+
+        # Generate deterministic entity ID
+        entity_id = _generate_entity_id(tenant_id, name, entity_type)
+        entity_id_map[name] = entity_id
+
+        # Get Neo4j label
+        label = _entity_type_to_label(entity_type)
+
+        # Build properties
+        properties = {
+            "name": name,
+            "canonical_name": _normalize_entity_name(name),
+            "entity_type": entity_type,
+            "confidence": confidence,
+            "mention_count": len(mentions),
+        }
+
+        # Create/merge entity node using custom query for dynamic label
+        query = f"""
+        MERGE (e:Entity:{label} {{id: $entity_id, tenant_id: $tenant_id}})
+        ON CREATE SET e += $properties, e.created_at = datetime()
+        ON MATCH SET e += $properties, e.updated_at = datetime()
+        RETURN e
+        """
+
+        await client.execute_query(
+            query,
+            {
+                "entity_id": entity_id,
+                "tenant_id": tenant_id,
+                "properties": properties,
+            },
+        )
+        nodes_created += 1
+
+    return nodes_created, entity_id_map
+
+
+async def _create_document_node_and_mentions(
+    client: Any,
+    document_id: str,
+    tenant_id: str,
+    entity_id_map: dict[str, str],
+    entities: list[EntityInfo] | list[dict[str, Any]],
+) -> int:
+    """
+    Create document node and MENTIONED_IN relationships.
+
+    Args:
+        client: Neo4j client instance
+        document_id: Document ID
+        tenant_id: Tenant ID
+        entity_id_map: Map of entity name -> entity_id
+        entities: List of entities
+
+    Returns:
+        Number of MENTIONED_IN relationships created
+    """
+    # Create document node
+    await client.create_document_node(
+        document_id=document_id,
+        tenant_id=tenant_id,
+        properties={"processed_at": "datetime()"},
+    )
+
+    mentions_created = 0
+
+    for entity in entities:
+        if isinstance(entity, dict):
+            name = entity.get("name", "")
+            mentions = entity.get("mentions", [])
+        else:
+            name = entity.name
+            mentions = entity.mentions
+
+        entity_id = entity_id_map.get(name)
+        if not entity_id:
+            continue
+
+        # Create MENTIONED_IN relationship with mention details
+        mention_properties = {
+            "mention_count": len(mentions),
+            "first_mention_chunk": mentions[0].get("chunk_index", 0) if mentions else 0,
+        }
+
+        try:
+            await client.create_mentioned_in_relationship(
+                entity_id=entity_id,
+                document_id=document_id,
+                tenant_id=tenant_id,
+                properties=mention_properties,
+            )
+            mentions_created += 1
+        except Exception as e:
+            activity.logger.warning(f"Failed to create MENTIONED_IN for {name}: {e}")
+
+    return mentions_created
+
+
+async def _create_entity_relationships(
+    client: Any,
+    relationships: list[RelationshipInfo] | list[dict[str, Any]],
+    tenant_id: str,
+    entity_id_map: dict[str, str],
+) -> int:
+    """
+    Create relationships between entity nodes.
+
+    Args:
+        client: Neo4j client instance
+        relationships: List of relationships to create
+        tenant_id: Tenant ID
+        entity_id_map: Map of entity name -> entity_id
+
+    Returns:
+        Number of relationships created
+    """
+    relationships_created = 0
+
+    for rel in relationships:
+        if isinstance(rel, dict):
+            source_name = rel.get("source_entity", "")
+            target_name = rel.get("target_entity", "")
+            rel_type = rel.get("relationship_type", "ASSOCIATED_WITH")
+            evidence = rel.get("evidence", "")
+            confidence = rel.get("confidence", 0.5)
+        else:
+            source_name = rel.source_entity
+            target_name = rel.target_entity
+            rel_type = rel.relationship_type
+            evidence = rel.evidence
+            confidence = rel.confidence
+
+        # Get entity IDs
+        source_id = entity_id_map.get(source_name)
+        target_id = entity_id_map.get(target_name)
+
+        if not source_id or not target_id:
+            activity.logger.debug(
+                f"Skipping relationship {source_name} -> {target_name}: entity not found"
+            )
+            continue
+
+        # Convert relationship type to Neo4j label
+        rel_label = _relationship_type_to_label(rel_type)
+
+        # Build properties
+        properties = {
+            "relationship_type": rel_type,
+            "evidence": evidence[:500] if evidence else "",  # Truncate long evidence
+            "confidence": confidence,
+        }
+
+        try:
+            await client.create_relationship(
+                source_id=source_id,
+                target_id=target_id,
+                relationship_type=rel_label,
+                tenant_id=tenant_id,
+                properties=properties,
+            )
+            relationships_created += 1
+        except Exception as e:
+            activity.logger.warning(
+                f"Failed to create relationship {source_name} -> {target_name}: {e}"
+            )
+
+    return relationships_created
+
+
 @activity.defn
 async def build_graph(input: BuildGraphInput) -> BuildGraphOutput:
     """
     Build knowledge graph in Neo4j.
 
-    Creates or updates entity nodes and relationship edges
-    in the knowledge graph.
+    Creates or updates entity nodes, document nodes, and relationship edges
+    in the knowledge graph. Uses MERGE for idempotent operations.
+
+    Operations performed:
+    1. Create/update entity nodes with type-specific labels
+    2. Create document node
+    3. Create MENTIONED_IN relationships between entities and document
+    4. Create inter-entity relationships
 
     Args:
         input: Graph building input with entities and relationships
@@ -1124,27 +1418,118 @@ async def build_graph(input: BuildGraphInput) -> BuildGraphOutput:
     Returns:
         Count of created nodes and relationships
     """
-    activity.logger.info(f"Building knowledge graph for document {input.document_id}")
-
-    nodes_created = 0
-    relationships_created = 0
-
-    # TODO: Implement actual Neo4j graph building
-    # In real implementation:
-    # 1. Get Neo4j client
-    # 2. For each entity:
-    #    - MERGE entity node by (tenant_id, canonical_name, type)
-    #    - Set/update properties
-    #    - Create MENTIONED_IN relationship to document
-    # 3. For each relationship:
-    #    - MERGE relationship between entity nodes
-    #    - Set properties including evidence and confidence
-    # 4. Link entities to project if project_id is set
-
-    # Use MERGE for idempotency
+    # Lazy import to avoid Temporal sandbox issues
+    from alexandria_db.clients import Neo4jClient
 
     activity.logger.info(
-        f"Graph built: {nodes_created} nodes, {relationships_created} relationships"
+        f"Building knowledge graph for document {input.document_id}",
+        extra={
+            "document_id": input.document_id,
+            "tenant_id": input.tenant_id,
+            "entity_count": len(input.entities),
+            "relationship_count": len(input.relationships),
+        },
+    )
+
+    # Handle case with no entities
+    if not input.entities:
+        activity.logger.info("No entities to add to graph")
+        activity.heartbeat()
+        return BuildGraphOutput(nodes_created=0, relationships_created=0)
+
+    # Get configuration from environment
+    neo4j_uri = os.getenv(NEO4J_URI_ENV, DEFAULT_NEO4J_URI)
+    neo4j_user = os.getenv(NEO4J_USER_ENV, DEFAULT_NEO4J_USER)
+    neo4j_password = os.getenv(NEO4J_PASSWORD_ENV, DEFAULT_NEO4J_PASSWORD)
+    neo4j_database = os.getenv(NEO4J_DATABASE_ENV, DEFAULT_NEO4J_DATABASE)
+
+    # Create client
+    client = Neo4jClient(
+        uri=neo4j_uri,
+        user=neo4j_user,
+        password=neo4j_password,
+        database=neo4j_database,
+    )
+
+    try:
+        # Step 1: Create entity nodes
+        activity.heartbeat("Creating entity nodes")
+        nodes_created, entity_id_map = await _create_entity_nodes(
+            client=client,
+            entities=input.entities,
+            _document_id=input.document_id,
+            tenant_id=input.tenant_id,
+            _project_id=input.project_id,
+        )
+        activity.logger.info(f"Created {nodes_created} entity nodes")
+
+        # Step 2: Create document node and MENTIONED_IN relationships
+        activity.heartbeat("Creating document mentions")
+        mentions_created = await _create_document_node_and_mentions(
+            client=client,
+            document_id=input.document_id,
+            tenant_id=input.tenant_id,
+            entity_id_map=entity_id_map,
+            entities=input.entities,
+        )
+        activity.logger.info(f"Created {mentions_created} MENTIONED_IN relationships")
+
+        # Step 3: Create inter-entity relationships
+        activity.heartbeat("Creating entity relationships")
+        relationships_created = await _create_entity_relationships(
+            client=client,
+            relationships=input.relationships,
+            tenant_id=input.tenant_id,
+            entity_id_map=entity_id_map,
+        )
+        activity.logger.info(f"Created {relationships_created} entity relationships")
+
+        # Total relationships = MENTIONED_IN + inter-entity
+        total_relationships = mentions_created + relationships_created
+
+        activity.logger.info(
+            f"Graph built: {nodes_created} nodes, {total_relationships} relationships",
+            extra={
+                "document_id": input.document_id,
+                "nodes_created": nodes_created,
+                "mentions_created": mentions_created,
+                "relationships_created": relationships_created,
+            },
+        )
+
+        return BuildGraphOutput(
+            nodes_created=nodes_created,
+            relationships_created=total_relationships,
+        )
+
+    finally:
+        await client.close()
+
+
+@activity.defn
+async def build_graph_mock(input: BuildGraphInput) -> BuildGraphOutput:
+    """
+    Mock graph building for testing without Neo4j.
+
+    Simulates graph building by counting entities and relationships.
+    Useful for unit testing workflows without a running Neo4j instance.
+
+    Args:
+        input: Graph building input
+
+    Returns:
+        Mock counts based on input
+    """
+    activity.logger.info(f"Mock building graph for document {input.document_id}")
+
+    nodes_created = len(input.entities)
+    # Count MENTIONED_IN (one per entity) + inter-entity relationships
+    relationships_created = len(input.entities) + len(input.relationships)
+
+    activity.heartbeat()
+
+    activity.logger.info(
+        f"Mock graph built: {nodes_created} nodes, {relationships_created} relationships"
     )
 
     return BuildGraphOutput(

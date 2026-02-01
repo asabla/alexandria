@@ -73,6 +73,17 @@ section-order = ["future", "standard", "third-party", "first-party", "local-fold
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ARG", "PLR2004"]
+# Activities use lazy imports for Temporal sandbox compatibility
+"workers/**/activities/*.py" = [
+    "PLC0415",  # import should be at top-level (lazy imports needed)
+    "PLW0603",  # global statement (for lazy model loading)
+    "PLR0911",  # too many return statements
+    "PLR0912",  # too many branches
+    "SIM102",   # nested if statements (intentional for readability)
+    "SIM103",   # return negated condition (intentional for readability)
+    "SIM108",   # ternary operator (intentional for readability)
+    "SIM113",   # enumerate for index (counter intentional for heartbeat tracking)
+]
 
 # =============================================================================
 # MYPY - TYPE CHECKING
