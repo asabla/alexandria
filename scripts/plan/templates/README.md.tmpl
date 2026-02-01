@@ -1,0 +1,38 @@
+# {{PLAN_NAME}}
+
+> **Status**: Active  
+> **Created**: {{CREATED_DATE_SHORT}}
+
+## Planning Workflow
+
+This directory contains the active implementation plan for the project. The planning structure follows three levels of detail:
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `metadata.yaml` | Plan metadata (name, dates, status) |
+| `00_overview.md` | Bird's eye view - goals, phases, key decisions |
+| `01_stories.md` | User stories organized by phase and epic |
+| `02_tasks.md` | Detailed tasks with hierarchical IDs |
+
+### Workflow
+
+1. **Start here**: Review `00_overview.md` for the big picture
+2. **Understand scope**: Check `01_stories.md` for what we're building
+3. **Get to work**: Use `02_tasks.md` to track progress on specific tasks
+
+### Task ID Format
+
+Tasks use hierarchical IDs: `P{phase}-E{epic}-S{story}-T{task}`
+
+Example: `P0-E1-S2-T3` = Phase 0, Epic 1, Story 2, Task 3
+
+### When Complete
+
+Archive this plan using:
+```bash
+./scripts/plan/archive-plan.sh
+```
+
+This moves the plan to `docs/plans/` for historical reference.
