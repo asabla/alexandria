@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "Alexandria Ingestion Worker - Document processing with Temporal"
 requires-python = ">=3.12"
 dependencies = [
-    "temporalio>=1.4",
-    "docling>=0.1",
+    "temporalio>=1.7",
     "pydantic>=2.6",
     "pydantic-settings>=2.1",
     "structlog>=24.1",
@@ -13,10 +12,12 @@ dependencies = [
     "opentelemetry-sdk>=1.22",
     "minio>=7.2",
     "httpx>=0.27",
-    "spacy>=3.7",
     "alexandria-core",
     "alexandria-db",
 ]
+
+[project.scripts]
+ingestion-worker = "ingestion_worker.worker:main"
 
 [project.optional-dependencies]
 dev = [

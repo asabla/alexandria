@@ -12,12 +12,12 @@
 
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
-| Phase 0 | 89 | 35 | 0 | 0 |
-| Phase 1 | 92 | 0 | 0 | 0 |
+| Phase 0 | 89 | 48 | 0 | 0 |
+| Phase 1 | 92 | 8 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 35 | 0 | 0 |
+| **Total** | **393** | 56 | 0 | 0 |
 
 ---
 
@@ -86,12 +86,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S0b-T1 | Create TenantContext dataclass | S | Pending | P0-E2-S0 |
-| P0-E2-S0b-T2 | Create RequestContext dataclass | S | Pending | T1 |
-| P0-E2-S0b-T3 | Implement get_tenant dependency | M | Pending | T1 |
-| P0-E2-S0b-T4 | Implement get_request_context dependency | M | Pending | T2, T3 |
-| P0-E2-S0b-T5 | Add project validation (belongs to tenant) | S | Pending | T4 |
-| P0-E2-S0b-T6 | Implement single-tenant mode bypass | S | Pending | T3 |
+| P0-E2-S0b-T1 | Create TenantContext dataclass | S | Done | P0-E2-S0 |
+| P0-E2-S0b-T2 | Create RequestContext dataclass | S | Done | T1 |
+| P0-E2-S0b-T3 | Implement get_tenant dependency | M | Done | T1 |
+| P0-E2-S0b-T4 | Implement get_request_context dependency | M | Done | T2, T3 |
+| P0-E2-S0b-T5 | Add project validation (belongs to tenant) | S | Done | T4 |
+| P0-E2-S0b-T6 | Implement single-tenant mode bypass | S | Done | T3 |
 | P0-E2-S0b-T7 | Write unit tests for middleware | M | Pending | T1-T6 |
 
 ---
@@ -117,8 +117,8 @@
 | P0-E2-S2-T2 | Configure buckets via init script | M | Done | T1 |
 | P0-E2-S2-T3 | Set up IAM policies for service accounts | M | Pending | T2 |
 | P0-E2-S2-T4 | Configure console access (port 9001) | S | Done | T1 |
-| P0-E2-S2-T5 | Create pre-signed URL utility functions | M | Pending | T3 |
-| P0-E2-S2-T6 | Write MinIO client wrapper class | M | Pending | T5 |
+| P0-E2-S2-T5 | Create pre-signed URL utility functions | M | Done | T3 |
+| P0-E2-S2-T6 | Write MinIO client wrapper class | M | Done | T5 |
 
 ---
 
@@ -130,7 +130,7 @@
 | P0-E2-S3-T2 | Configure collection initialization script | M | Pending | T1 |
 | P0-E2-S3-T3 | Set up payload indexes (document_id, tenant_id) | M | Pending | T2 |
 | P0-E2-S3-T4 | Configure quantization (INT8 scalar) | S | Pending | T2 |
-| P0-E2-S3-T5 | Create Qdrant client wrapper class | M | Pending | T1 |
+| P0-E2-S3-T5 | Create Qdrant client wrapper class | M | Done | T1 |
 | P0-E2-S3-T6 | Configure snapshot/backup settings | S | Pending | T1 |
 
 ---
@@ -143,7 +143,7 @@
 | P0-E2-S4-T2 | Configure APOC plugin installation | M | Done | T1 |
 | P0-E2-S4-T3 | Create constraints initialization script | M | Done | T2 |
 | P0-E2-S4-T4 | Create indexes (Entity.name, Entity.type, Document.id) | S | Done | T3 |
-| P0-E2-S4-T5 | Create Neo4j client wrapper class | M | Pending | T1 |
+| P0-E2-S4-T5 | Create Neo4j client wrapper class | M | Done | T1 |
 | P0-E2-S4-T6 | Configure browser access (port 7474, 7687) | S | Done | T1 |
 
 ---
@@ -156,7 +156,7 @@
 | P0-E2-S5-T2 | Create index initialization script | M | Pending | T1 |
 | P0-E2-S5-T3 | Configure searchable/filterable attributes | S | Pending | T2 |
 | P0-E2-S5-T4 | Configure facets (document_type, source, date_range) | S | Pending | T2 |
-| P0-E2-S5-T5 | Create MeiliSearch client wrapper class | M | Pending | T1 |
+| P0-E2-S5-T5 | Create MeiliSearch client wrapper class | M | Done | T1 |
 | P0-E2-S5-T6 | Disable analytics for privacy | S | Done | T1 |
 
 ---
@@ -170,7 +170,7 @@
 | P0-E2-S6-T3 | Add temporal-ui service | S | Done | T1 |
 | P0-E2-S6-T4 | Configure PostgreSQL backend for Temporal | M | Done | T1, P0-E2-S1 |
 | P0-E2-S6-T5 | Create namespace initialization script | M | Pending | T1-T3 |
-| P0-E2-S6-T6 | Create Temporal client wrapper class | M | Pending | T1 |
+| P0-E2-S6-T6 | Create Temporal client wrapper class | M | Done | T1 |
 
 ---
 
@@ -334,13 +334,13 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E1-S1-T1 | Create SQLAlchemy Document model | M | Pending | P0-E2-S1 |
-| P1-E1-S1-T2 | Create SQLAlchemy IngestionJob model | M | Pending | T1 |
-| P1-E1-S1-T3 | Create SQLAlchemy Chunk model | M | Pending | T1 |
-| P1-E1-S1-T4 | Create SQLAlchemy Entity model | M | Pending | T1 |
-| P1-E1-S1-T5 | Create Alembic migrations for all models | M | Pending | T1-T4 |
-| P1-E1-S1-T6 | Implement DocumentRepository | M | Pending | T1 |
-| P1-E1-S1-T7 | Implement IngestionJobRepository | M | Pending | T2 |
+| P1-E1-S1-T1 | Create SQLAlchemy Document model | M | Done | P0-E2-S1 |
+| P1-E1-S1-T2 | Create SQLAlchemy IngestionJob model | M | Done | T1 |
+| P1-E1-S1-T3 | Create SQLAlchemy Chunk model | M | Done | T1 |
+| P1-E1-S1-T4 | Create SQLAlchemy Entity model | M | Done | T1 |
+| P1-E1-S1-T5 | Create Alembic migrations for all models | M | Done | T1-T4 |
+| P1-E1-S1-T6 | Implement DocumentRepository | M | Done | T1 |
+| P1-E1-S1-T7 | Implement IngestionJobRepository | M | Done | T2 |
 | P1-E1-S1-T8 | Write unit tests for repositories | M | Pending | T6, T7 |
 
 ---
