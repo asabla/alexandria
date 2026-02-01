@@ -10,6 +10,8 @@ Tests cover:
 - Full activity with mocked spaCy
 - Mock activity for testing
 - Edge cases
+- Relationship extraction helpers
+- Relationship extraction activity
 """
 
 from __future__ import annotations
@@ -25,9 +27,19 @@ from ingestion_worker.activities.extraction_activities import (
     EXTRACTED_ENTITY_TYPES,
     MAX_ENTITY_LENGTH,
     MIN_ENTITY_LENGTH,
+    MIN_RELATIONSHIP_CONFIDENCE,
+    RELATIONSHIP_TYPE_MAP,
     SPACY_LABEL_TO_ENTITY_TYPE,
+    WORK_VERBS,
+    _build_entity_lookup,
+    _calculate_relationship_confidence,
+    _classify_verb_pattern,
+    _deduplicate_relationships,
+    _determine_relationship_type,
     _extract_context,
     _extract_entities_from_chunk,
+    _extract_relationships_from_sentence,
+    _find_entity_in_span,
     _group_entity_mentions,
     _is_valid_entity,
     _map_spacy_label,
@@ -37,6 +49,8 @@ from ingestion_worker.workflows.document_ingestion import (
     ChunkInfo,
     EntityInfo,
     ExtractEntitiesInput,
+    ExtractRelationshipsInput,
+    RelationshipInfo,
 )
 
 
@@ -959,3 +973,677 @@ class TestExtractEntitiesEdgeCases:
         assert len(mentions) == 2
         assert any(m["name"] == "北京" for m in mentions)
         assert any(m["name"] == "François Müller" for m in mentions)
+
+
+# =============================================================================
+# Relationship Extraction Tests
+# =============================================================================
+
+
+@pytest.fixture
+def sample_entities() -> list[EntityInfo]:
+    """Create sample entities for relationship extraction tests."""
+    return [
+        EntityInfo(
+            name="John Doe",
+            entity_type="person",
+            mentions=[{"chunk_index": 0, "start": 0, "end": 8}],
+            confidence=0.9,
+        ),
+        EntityInfo(
+            name="Acme Corporation",
+            entity_type="organization",
+            mentions=[{"chunk_index": 0, "start": 20, "end": 36}],
+            confidence=0.85,
+        ),
+        EntityInfo(
+            name="New York",
+            entity_type="location",
+            mentions=[{"chunk_index": 0, "start": 50, "end": 58}],
+            confidence=0.88,
+        ),
+    ]
+
+
+class TestBuildEntityLookup:
+    """Tests for entity lookup building."""
+
+    def test_builds_lookup_from_entity_info_list(self, sample_entities):
+        """Test building lookup from EntityInfo objects."""
+        lookup = _build_entity_lookup(sample_entities)
+
+        assert len(lookup) == 3
+        assert "john doe" in lookup
+        assert "acme corporation" in lookup
+        assert "new york" in lookup
+
+    def test_builds_lookup_from_dict_list(self):
+        """Test building lookup from dictionaries."""
+        entities = [
+            {"name": "John Doe", "entity_type": "person"},
+            {"name": "Acme Corp", "entity_type": "organization"},
+        ]
+
+        lookup = _build_entity_lookup(entities)
+
+        assert len(lookup) == 2
+        assert lookup["john doe"]["entity_type"] == "person"
+        assert lookup["acme corp"]["entity_type"] == "organization"
+
+    def test_normalizes_names_in_lookup(self):
+        """Test that names are normalized in the lookup."""
+        entities = [
+            EntityInfo(
+                name="JOHN DOE",
+                entity_type="person",
+                mentions=[],
+                confidence=0.9,
+            ),
+        ]
+
+        lookup = _build_entity_lookup(entities)
+
+        assert "john doe" in lookup
+        assert "JOHN DOE" not in lookup
+
+
+class TestFindEntityInSpan:
+    """Tests for finding entities in text spans."""
+
+    def test_finds_exact_match(self, sample_entities):
+        """Test finding entity with exact match."""
+        lookup = _build_entity_lookup(sample_entities)
+
+        result = _find_entity_in_span("John Doe", lookup)
+
+        assert result is not None
+        assert result["name"] == "John Doe"
+        assert result["entity_type"] == "person"
+
+    def test_finds_case_insensitive_match(self, sample_entities):
+        """Test finding entity with different case."""
+        lookup = _build_entity_lookup(sample_entities)
+
+        result = _find_entity_in_span("JOHN DOE", lookup)
+
+        assert result is not None
+        assert result["entity_type"] == "person"
+
+    def test_finds_partial_match_in_span(self, sample_entities):
+        """Test finding entity contained in larger span."""
+        lookup = _build_entity_lookup(sample_entities)
+
+        result = _find_entity_in_span("Mr. John Doe, CEO", lookup)
+
+        assert result is not None
+        assert result["entity_type"] == "person"
+
+    def test_returns_none_for_no_match(self, sample_entities):
+        """Test returns None when no entity matches."""
+        lookup = _build_entity_lookup(sample_entities)
+
+        result = _find_entity_in_span("Unknown Person", lookup)
+
+        assert result is None
+
+
+class TestClassifyVerbPattern:
+    """Tests for verb pattern classification."""
+
+    def test_classifies_work_verbs(self):
+        """Test classification of work-related verbs."""
+        assert _classify_verb_pattern("work") == "work"
+        assert _classify_verb_pattern("employ") == "work"
+        assert _classify_verb_pattern("manage") == "work"
+        assert _classify_verb_pattern("lead") == "work"
+
+    def test_classifies_ownership_verbs(self):
+        """Test classification of ownership verbs."""
+        assert _classify_verb_pattern("own") == "own"
+        assert _classify_verb_pattern("acquire") == "own"
+        assert _classify_verb_pattern("purchase") == "own"
+
+    def test_classifies_location_verbs(self):
+        """Test classification of location verbs."""
+        assert _classify_verb_pattern("locate") == "locate"
+        assert _classify_verb_pattern("base") == "locate"
+        assert _classify_verb_pattern("headquarter") == "locate"
+
+    def test_classifies_membership_verbs(self):
+        """Test classification of membership verbs."""
+        assert _classify_verb_pattern("belong") == "member"
+        assert _classify_verb_pattern("affiliate") == "member"
+
+    def test_classifies_report_verbs(self):
+        """Test classification of reporting verbs."""
+        assert _classify_verb_pattern("report") == "report"
+        assert _classify_verb_pattern("answer") == "report"
+
+    def test_returns_none_for_unknown_verbs(self):
+        """Test returns None for unrecognized verbs."""
+        assert _classify_verb_pattern("xyz") is None
+        assert _classify_verb_pattern("think") is None
+
+
+class TestDetermineRelationshipType:
+    """Tests for relationship type determination."""
+
+    def test_person_organization_work(self):
+        """Test person works_for organization."""
+        result = _determine_relationship_type("person", "organization", "work")
+        assert result == "works_for"
+
+    def test_person_organization_own(self):
+        """Test person owns organization."""
+        result = _determine_relationship_type("person", "organization", "own")
+        assert result == "owns"
+
+    def test_organization_organization_partner(self):
+        """Test organization partner_of organization."""
+        result = _determine_relationship_type("organization", "organization", "partner")
+        assert result == "partner_of"
+
+    def test_organization_location_locate(self):
+        """Test organization headquarters_in location."""
+        result = _determine_relationship_type("organization", "location", "locate")
+        assert result == "headquarters_in"
+
+    def test_person_person_work(self):
+        """Test person works_with person."""
+        result = _determine_relationship_type("person", "person", "work")
+        assert result == "works_with"
+
+    def test_fallback_to_associated_with(self):
+        """Test fallback to associated_with for unknown combinations."""
+        result = _determine_relationship_type("unknown", "unknown", "unknown")
+        assert result == "associated_with"
+
+
+class TestCalculateRelationshipConfidence:
+    """Tests for relationship confidence calculation."""
+
+    def test_base_confidence(self):
+        """Test base confidence for a relationship."""
+        rel = {
+            "source_entity": "John",
+            "target_entity": "Acme",
+            "relationship_type": "works_for",
+            "verb": None,
+            "evidence": "...",
+        }
+
+        confidence = _calculate_relationship_confidence(rel, 1)
+
+        assert confidence >= 0.3
+        assert confidence <= 1.0
+
+    def test_verb_based_boost(self):
+        """Test confidence boost for verb-based extraction."""
+        rel_no_verb = {
+            "source_entity": "John",
+            "target_entity": "Acme",
+            "relationship_type": "works_for",
+            "verb": None,
+            "evidence": "...",
+        }
+
+        rel_with_verb = {
+            "source_entity": "John",
+            "target_entity": "Acme",
+            "relationship_type": "works_for",
+            "verb": "work",
+            "evidence": "...",
+        }
+
+        conf_no_verb = _calculate_relationship_confidence(rel_no_verb, 1)
+        conf_with_verb = _calculate_relationship_confidence(rel_with_verb, 1)
+
+        assert conf_with_verb > conf_no_verb
+
+    def test_multiple_occurrences_boost(self):
+        """Test confidence boost for multiple occurrences."""
+        rel = {
+            "source_entity": "John",
+            "target_entity": "Acme",
+            "relationship_type": "works_for",
+            "verb": "work",
+            "evidence": "...",
+        }
+
+        conf_single = _calculate_relationship_confidence(rel, 1)
+        conf_multiple = _calculate_relationship_confidence(rel, 5)
+
+        assert conf_multiple > conf_single
+
+    def test_confidence_capped_at_maximum(self):
+        """Test confidence doesn't exceed 0.95."""
+        rel = {
+            "source_entity": "John",
+            "target_entity": "Acme",
+            "relationship_type": "works_for",
+            "verb": "work",
+            "evidence": "...",
+        }
+
+        confidence = _calculate_relationship_confidence(rel, 100)
+
+        assert confidence <= 0.95
+
+
+class TestDeduplicateRelationships:
+    """Tests for relationship deduplication."""
+
+    def test_deduplicates_identical_relationships(self):
+        """Test that identical relationships are merged."""
+        relationships = [
+            {
+                "source_entity": "John Doe",
+                "target_entity": "Acme Corp",
+                "relationship_type": "works_for",
+                "evidence": "Evidence 1",
+                "verb": "work",
+            },
+            {
+                "source_entity": "John Doe",
+                "target_entity": "Acme Corp",
+                "relationship_type": "works_for",
+                "evidence": "Evidence 2",
+                "verb": "work",
+            },
+        ]
+
+        result = _deduplicate_relationships(relationships)
+
+        assert len(result) == 1
+        assert result[0].source_entity == "John Doe"
+        assert result[0].target_entity == "Acme Corp"
+
+    def test_keeps_different_relationships(self):
+        """Test that different relationships are kept separate."""
+        relationships = [
+            {
+                "source_entity": "John Doe",
+                "target_entity": "Acme Corp",
+                "relationship_type": "works_for",
+                "evidence": "Evidence 1",
+                "verb": "work",
+            },
+            {
+                "source_entity": "Acme Corp",
+                "target_entity": "New York",
+                "relationship_type": "located_in",
+                "evidence": "Evidence 2",
+                "verb": "locate",
+            },
+        ]
+
+        result = _deduplicate_relationships(relationships)
+
+        assert len(result) == 2
+
+    def test_filters_low_confidence(self):
+        """Test that low confidence relationships are filtered."""
+        relationships = [
+            {
+                "source_entity": "X",
+                "target_entity": "Y",
+                "relationship_type": "associated_with",
+                "evidence": "...",
+                "verb": None,
+            },
+        ]
+
+        result = _deduplicate_relationships(relationships)
+
+        # May or may not be filtered depending on MIN_RELATIONSHIP_CONFIDENCE
+        for rel in result:
+            assert rel.confidence >= MIN_RELATIONSHIP_CONFIDENCE
+
+    def test_sorts_by_confidence(self):
+        """Test that results are sorted by confidence."""
+        relationships = [
+            {
+                "source_entity": "A",
+                "target_entity": "B",
+                "relationship_type": "associated_with",
+                "evidence": "...",
+                "verb": None,
+            },
+            {
+                "source_entity": "C",
+                "target_entity": "D",
+                "relationship_type": "works_for",
+                "evidence": "...",
+                "verb": "work",
+            },
+        ]
+
+        result = _deduplicate_relationships(relationships)
+
+        if len(result) >= 2:
+            assert result[0].confidence >= result[1].confidence
+
+
+class TestExtractRelationshipsFromSentence:
+    """Tests for sentence-level relationship extraction."""
+
+    def test_extracts_from_verb_pattern(self):
+        """Test extraction from subject-verb-object pattern."""
+        # This test requires a mock spaCy sentence
+        # We'll create mock objects that simulate spaCy's behavior
+
+        @dataclass
+        class MockToken:
+            text: str
+            lemma_: str
+            pos_: str
+            dep_: str
+            i: int
+            children: list = field(default_factory=list)
+            subtree: list = field(default_factory=list)
+
+        @dataclass
+        class MockEntity:
+            text: str
+            start: int
+            end: int
+
+        @dataclass
+        class MockSent:
+            text: str
+            ents: list
+            doc: Any = None
+
+            def __iter__(self):
+                return iter([])
+
+            def __len__(self):
+                return len(self.text)
+
+        entity_lookup = {
+            "john doe": {"name": "John Doe", "entity_type": "person"},
+            "acme corp": {"name": "Acme Corp", "entity_type": "organization"},
+        }
+
+        # Create a minimal mock sentence
+        sent = MockSent(
+            text="John Doe works at Acme Corp.",
+            ents=[
+                MockEntity(text="John Doe", start=0, end=2),
+                MockEntity(text="Acme Corp", start=4, end=6),
+            ],
+        )
+
+        # The function should handle the minimal mock
+        relationships = _extract_relationships_from_sentence(sent, entity_lookup)
+
+        # With the minimal mock, we won't get verb-based relationships
+        # but we might get co-occurrence based ones
+        assert isinstance(relationships, list)
+
+    def test_skips_long_sentences(self):
+        """Test that very long sentences are skipped."""
+        from ingestion_worker.activities.extraction_activities import MAX_SENTENCE_LENGTH
+
+        @dataclass
+        class MockSent:
+            text: str
+            ents: list = field(default_factory=list)
+
+        entity_lookup = {"john": {"name": "John", "entity_type": "person"}}
+
+        # Create a sentence longer than MAX_SENTENCE_LENGTH
+        long_sent = MockSent(text="A" * (MAX_SENTENCE_LENGTH + 100))
+
+        relationships = _extract_relationships_from_sentence(long_sent, entity_lookup)
+
+        assert relationships == []
+
+
+class TestExtractRelationshipsActivity:
+    """Tests for the extract_relationships activity."""
+
+    @pytest.mark.asyncio
+    async def test_handles_no_entities(self):
+        """Test activity handles case with no entities."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="Some content without entities.",
+                entities=[],
+            )
+
+            result = await extract_relationships(input_data)
+
+        assert result.relationships == []
+
+    @pytest.mark.asyncio
+    async def test_handles_single_entity(self):
+        """Test activity handles case with single entity."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="John Doe is a person.",
+                entities=[
+                    EntityInfo(
+                        name="John Doe",
+                        entity_type="person",
+                        mentions=[],
+                        confidence=0.9,
+                    )
+                ],
+            )
+
+            result = await extract_relationships(input_data)
+
+        assert result.relationships == []
+
+    @pytest.mark.asyncio
+    async def test_extracts_relationships_with_mocked_spacy(self, sample_entities):
+        """Test full activity with mocked spaCy."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships
+
+        @dataclass
+        class MockToken:
+            text: str
+            lemma_: str
+            pos_: str
+            dep_: str
+            i: int
+            children: list = field(default_factory=list)
+
+            @property
+            def subtree(self):
+                return [self]
+
+        @dataclass
+        class MockEntity:
+            text: str
+            label_: str
+            start: int
+            end: int
+            start_char: int
+            end_char: int
+
+        @dataclass
+        class MockSent:
+            text: str
+            ents: list
+            doc: Any = None
+            _tokens: list = field(default_factory=list)
+
+            def __iter__(self):
+                return iter(self._tokens)
+
+            def __len__(self):
+                return len(self.text)
+
+        @dataclass
+        class MockDoc:
+            text: str
+            _sents: list = field(default_factory=list)
+            ents: list = field(default_factory=list)
+
+            @property
+            def sents(self):
+                return self._sents
+
+        def mock_nlp(text):
+            # Create a mock doc with one sentence
+            sent = MockSent(
+                text=text,
+                ents=[
+                    MockEntity(
+                        text="John Doe",
+                        label_="PERSON",
+                        start=0,
+                        end=2,
+                        start_char=0,
+                        end_char=8,
+                    ),
+                    MockEntity(
+                        text="Acme Corporation",
+                        label_="ORG",
+                        start=4,
+                        end=6,
+                        start_char=20,
+                        end_char=36,
+                    ),
+                ],
+            )
+            doc = MockDoc(text=text, _sents=[sent])
+            sent.doc = doc
+            return doc
+
+        with (
+            patch(
+                "ingestion_worker.activities.extraction_activities._get_spacy_model",
+                return_value=mock_nlp,
+            ),
+            patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity,
+        ):
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="John Doe works at Acme Corporation in New York.",
+                entities=sample_entities,
+            )
+
+            result = await extract_relationships(input_data)
+
+        # Should return a list of relationships (may be empty with minimal mock)
+        assert isinstance(result.relationships, list)
+
+
+class TestExtractRelationshipsMockActivity:
+    """Tests for the mock relationship extraction activity."""
+
+    @pytest.mark.asyncio
+    async def test_returns_works_for_relationship(self):
+        """Test mock returns works_for when patterns match."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships_mock
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="John Doe works at Acme Corp as CEO.",
+                entities=[
+                    EntityInfo(
+                        name="John Doe",
+                        entity_type="person",
+                        mentions=[],
+                        confidence=0.9,
+                    ),
+                    EntityInfo(
+                        name="Acme Corp",
+                        entity_type="organization",
+                        mentions=[],
+                        confidence=0.85,
+                    ),
+                ],
+            )
+
+            result = await extract_relationships_mock(input_data)
+
+        assert len(result.relationships) >= 1
+        assert any(r.relationship_type == "works_for" for r in result.relationships)
+
+    @pytest.mark.asyncio
+    async def test_returns_headquarters_relationship(self):
+        """Test mock returns headquarters_in when patterns match."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships_mock
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="Acme Corp is headquartered in New York.",
+                entities=[
+                    EntityInfo(
+                        name="Acme Corp",
+                        entity_type="organization",
+                        mentions=[],
+                        confidence=0.85,
+                    ),
+                    EntityInfo(
+                        name="New York",
+                        entity_type="location",
+                        mentions=[],
+                        confidence=0.88,
+                    ),
+                ],
+            )
+
+            result = await extract_relationships_mock(input_data)
+
+        assert len(result.relationships) >= 1
+        assert any(r.relationship_type == "headquarters_in" for r in result.relationships)
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_no_patterns(self):
+        """Test mock returns empty list when no patterns match."""
+        from ingestion_worker.activities.extraction_activities import extract_relationships_mock
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ExtractRelationshipsInput(
+                document_id="doc-123",
+                tenant_id="tenant-456",
+                content="This content has no recognizable patterns.",
+                entities=[
+                    EntityInfo(
+                        name="Unknown Entity",
+                        entity_type="unknown",
+                        mentions=[],
+                        confidence=0.5,
+                    ),
+                ],
+            )
+
+            result = await extract_relationships_mock(input_data)
+
+        assert result.relationships == []

@@ -98,9 +98,63 @@ CONTEXT_WINDOW = 50
 # Singleton for lazy-loaded spaCy model
 _nlp_model: Language | None = None
 
+# =============================================================================
+# Relationship Extraction Constants
+# =============================================================================
+
+# Verb patterns that indicate relationships between entities
+# Maps dependency labels to relationship types based on entity type combinations
+# Format: (subject_type, object_type, verb_lemmas) -> relationship_type
+
+# Verbs indicating employment/work relationships
+WORK_VERBS = {"work", "employ", "hire", "join", "lead", "head", "manage", "direct", "run"}
+OWNERSHIP_VERBS = {"own", "acquire", "purchase", "buy", "control", "hold"}
+LOCATION_VERBS = {"locate", "base", "headquarter", "situate", "establish", "found", "operate"}
+MEMBERSHIP_VERBS = {"join", "belong", "member", "part", "affiliate"}
+PARTNERSHIP_VERBS = {"partner", "collaborate", "cooperate", "ally", "associate"}
+FAMILY_VERBS = {"marry", "divorce", "parent", "child", "sibling", "relate"}
+
+# Prepositions that indicate relationships
+WORK_PREPOSITIONS = {"at", "for", "with"}
+LOCATION_PREPOSITIONS = {"in", "at", "from", "near"}
+OWNERSHIP_PREPOSITIONS = {"of"}
+
+# Relationship type mapping based on entity types and verb patterns
+# (source_type, target_type, pattern_type) -> relationship_type
+RELATIONSHIP_TYPE_MAP: dict[tuple[str, str, str], str] = {
+    # Person -> Organization
+    ("person", "organization", "work"): "works_for",
+    ("person", "organization", "own"): "owns",
+    ("person", "organization", "lead"): "works_for",  # CEO of X = works_for
+    ("person", "organization", "member"): "member_of",
+    # Organization -> Organization
+    ("organization", "organization", "own"): "subsidiary_of",
+    ("organization", "organization", "partner"): "partner_of",
+    ("organization", "organization", "compete"): "competitor_of",
+    # Entity -> Location
+    ("person", "location", "locate"): "located_in",
+    ("organization", "location", "locate"): "headquarters_in",
+    ("organization", "location", "operate"): "located_in",
+    ("event", "location", "locate"): "occurred_at",
+    # Person -> Person
+    ("person", "person", "work"): "works_with",
+    ("person", "person", "family"): "family",
+    ("person", "person", "report"): "reports_to",
+    # Event relationships
+    ("person", "event", "participate"): "participated_in",
+    ("organization", "event", "participate"): "participated_in",
+    ("event", "date", "occur"): "occurred_on",
+}
+
+# Minimum confidence threshold for extracted relationships
+MIN_RELATIONSHIP_CONFIDENCE = 0.3
+
+# Maximum sentence length to process (very long sentences are often parsing errors)
+MAX_SENTENCE_LENGTH = 500
+
 
 # =============================================================================
-# Helper Functions
+# Helper Functions - Entity Extraction
 # =============================================================================
 
 
@@ -404,6 +458,376 @@ def _group_entity_mentions(all_mentions: list[dict[str, Any]]) -> list[EntityInf
 
 
 # =============================================================================
+# Helper Functions - Relationship Extraction
+# =============================================================================
+
+
+def _build_entity_lookup(
+    entities: list[EntityInfo] | list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """
+    Build a lookup dictionary for entities by normalized name.
+
+    Args:
+        entities: List of EntityInfo objects or dicts.
+
+    Returns:
+        Dictionary mapping normalized names to entity info.
+    """
+    lookup: dict[str, dict[str, Any]] = {}
+
+    for entity in entities:
+        if isinstance(entity, dict):
+            name = entity.get("name", "")
+            entity_type = entity.get("entity_type", "unknown")
+        else:
+            name = entity.name
+            entity_type = entity.entity_type
+
+        normalized = _normalize_entity_name(name)
+        lookup[normalized] = {
+            "name": name,
+            "entity_type": entity_type,
+        }
+
+    return lookup
+
+
+def _find_entity_in_span(
+    span_text: str,
+    entity_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """
+    Find if any known entity is mentioned in a text span.
+
+    Args:
+        span_text: The text span to search.
+        entity_lookup: Lookup dictionary of known entities.
+
+    Returns:
+        Entity info dict if found, None otherwise.
+    """
+    normalized_span = _normalize_entity_name(span_text)
+
+    # Direct match
+    if normalized_span in entity_lookup:
+        return entity_lookup[normalized_span]
+
+    # Check if any entity name is contained in the span
+    for normalized_name, entity_info in entity_lookup.items():
+        if normalized_name in normalized_span or normalized_span in normalized_name:
+            return entity_info
+
+    return None
+
+
+def _classify_verb_pattern(verb_lemma: str) -> str | None:
+    """
+    Classify a verb lemma into a relationship pattern type.
+
+    Args:
+        verb_lemma: The lemmatized form of the verb.
+
+    Returns:
+        Pattern type string or None if not recognized.
+    """
+    verb = verb_lemma.lower()
+
+    if verb in WORK_VERBS:
+        return "work"
+    if verb in OWNERSHIP_VERBS:
+        return "own"
+    if verb in LOCATION_VERBS:
+        return "locate"
+    if verb in MEMBERSHIP_VERBS:
+        return "member"
+    if verb in PARTNERSHIP_VERBS:
+        return "partner"
+    if verb in FAMILY_VERBS:
+        return "family"
+
+    # Check for specific patterns
+    if verb in {"report", "answer"}:
+        return "report"
+    if verb in {"compete", "rival"}:
+        return "compete"
+    if verb in {"attend", "participate", "join", "speak"}:
+        return "participate"
+    if verb in {"happen", "occur", "take"}:
+        return "occur"
+
+    return None
+
+
+def _determine_relationship_type(
+    source_type: str,
+    target_type: str,
+    pattern_type: str,
+) -> str:
+    """
+    Determine the relationship type based on entity types and verb pattern.
+
+    Args:
+        source_type: Entity type of the source entity.
+        target_type: Entity type of the target entity.
+        pattern_type: Classified verb pattern type.
+
+    Returns:
+        Relationship type string.
+    """
+    key = (source_type, target_type, pattern_type)
+
+    if key in RELATIONSHIP_TYPE_MAP:
+        return RELATIONSHIP_TYPE_MAP[key]
+
+    # Fallback to generic association
+    return "associated_with"
+
+
+def _extract_relationships_from_sentence(
+    sent,
+    entity_lookup: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Extract relationships from a single sentence using dependency parsing.
+
+    This function analyzes the dependency tree to find:
+    1. Subject-verb-object patterns where subject and object are entities
+    2. Prepositional phrases linking entities
+    3. Appositive constructions (X, the CEO of Y)
+
+    Args:
+        sent: A spaCy Span representing a sentence.
+        entity_lookup: Lookup dictionary of known entities.
+
+    Returns:
+        List of relationship dictionaries.
+    """
+    relationships: list[dict[str, Any]] = []
+
+    # Skip very long sentences (often parsing errors)
+    if len(sent.text) > MAX_SENTENCE_LENGTH:
+        return relationships
+
+    # Find entities in this sentence
+    sentence_entities: list[tuple[Any, dict[str, Any]]] = []
+    for ent in sent.ents:
+        entity_info = _find_entity_in_span(ent.text, entity_lookup)
+        if entity_info:
+            sentence_entities.append((ent, entity_info))
+
+    # Need at least 2 entities for a relationship
+    if len(sentence_entities) < 2:
+        return relationships
+
+    # Analyze dependency structure
+    for token in sent:
+        # Look for verbs that might indicate relationships
+        if token.pos_ == "VERB":
+            pattern_type = _classify_verb_pattern(token.lemma_)
+
+            if pattern_type:
+                # Find subject and object of the verb
+                subject = None
+                obj = None
+
+                for child in token.children:
+                    if child.dep_ in {"nsubj", "nsubjpass"}:
+                        # Check if subject contains an entity
+                        subject_span = child.text
+                        if child.subtree:
+                            subject_tokens = list(child.subtree)
+                            subject_span = sent.doc[
+                                subject_tokens[0].i : subject_tokens[-1].i + 1
+                            ].text
+                        subject = _find_entity_in_span(subject_span, entity_lookup)
+
+                    elif child.dep_ in {"dobj", "pobj", "attr"}:
+                        # Check if object contains an entity
+                        obj_span = child.text
+                        if child.subtree:
+                            obj_tokens = list(child.subtree)
+                            obj_span = sent.doc[obj_tokens[0].i : obj_tokens[-1].i + 1].text
+                        obj = _find_entity_in_span(obj_span, entity_lookup)
+
+                    elif child.dep_ == "prep":
+                        # Check prepositional phrases
+                        for pobj in child.children:
+                            if pobj.dep_ == "pobj":
+                                pobj_span = pobj.text
+                                if pobj.subtree:
+                                    pobj_tokens = list(pobj.subtree)
+                                    pobj_span = sent.doc[
+                                        pobj_tokens[0].i : pobj_tokens[-1].i + 1
+                                    ].text
+                                prep_entity = _find_entity_in_span(pobj_span, entity_lookup)
+                                if prep_entity and not obj:
+                                    obj = prep_entity
+
+                if subject and obj and subject["name"] != obj["name"]:
+                    rel_type = _determine_relationship_type(
+                        subject["entity_type"],
+                        obj["entity_type"],
+                        pattern_type,
+                    )
+
+                    relationships.append(
+                        {
+                            "source_entity": subject["name"],
+                            "source_type": subject["entity_type"],
+                            "target_entity": obj["name"],
+                            "target_type": obj["entity_type"],
+                            "relationship_type": rel_type,
+                            "evidence": sent.text.strip(),
+                            "verb": token.lemma_,
+                            "pattern_type": pattern_type,
+                        }
+                    )
+
+    # Also check for co-occurrence based relationships (entities in same sentence)
+    # This is a fallback for cases where dependency parsing doesn't capture the relationship
+    if not relationships and len(sentence_entities) >= 2:
+        # Check for appositive patterns (X, the Y of Z)
+        for i, (ent1, info1) in enumerate(sentence_entities):
+            for ent2, info2 in sentence_entities[i + 1 :]:
+                # Skip if same entity
+                if info1["name"] == info2["name"]:
+                    continue
+
+                # Check if entities are close together (potential appositive)
+                distance = abs(ent1.start - ent2.start)
+                if distance <= 5:  # Within 5 tokens
+                    # Infer relationship type from entity types
+                    if info1["entity_type"] == "person" and info2["entity_type"] == "organization":
+                        relationships.append(
+                            {
+                                "source_entity": info1["name"],
+                                "source_type": info1["entity_type"],
+                                "target_entity": info2["name"],
+                                "target_type": info2["entity_type"],
+                                "relationship_type": "works_for",
+                                "evidence": sent.text.strip(),
+                                "verb": None,
+                                "pattern_type": "cooccurrence",
+                            }
+                        )
+                    elif (
+                        info1["entity_type"] == "organization"
+                        and info2["entity_type"] == "location"
+                    ):
+                        relationships.append(
+                            {
+                                "source_entity": info1["name"],
+                                "source_type": info1["entity_type"],
+                                "target_entity": info2["name"],
+                                "target_type": info2["entity_type"],
+                                "relationship_type": "located_in",
+                                "evidence": sent.text.strip(),
+                                "verb": None,
+                                "pattern_type": "cooccurrence",
+                            }
+                        )
+
+    return relationships
+
+
+def _calculate_relationship_confidence(
+    relationship: dict[str, Any],
+    occurrence_count: int,
+) -> float:
+    """
+    Calculate confidence score for a relationship.
+
+    Factors considered:
+    - Pattern type (verb-based is higher than co-occurrence)
+    - Number of occurrences in the document
+    - Relationship type specificity
+
+    Args:
+        relationship: The relationship dictionary.
+        occurrence_count: Number of times this relationship was found.
+
+    Returns:
+        Confidence score between 0 and 1.
+    """
+    base_confidence = 0.4
+
+    # Boost for verb-based extraction
+    if relationship.get("verb"):
+        base_confidence += 0.2
+
+    # Boost for multiple occurrences
+    if occurrence_count >= 2:
+        base_confidence += min(occurrence_count * 0.05, 0.2)
+
+    # Boost for specific relationship types (vs generic associated_with)
+    if relationship["relationship_type"] != "associated_with":
+        base_confidence += 0.1
+
+    # Cap at 0.95
+    return min(round(base_confidence, 3), 0.95)
+
+
+def _deduplicate_relationships(
+    all_relationships: list[dict[str, Any]],
+) -> list[RelationshipInfo]:
+    """
+    Deduplicate relationships and convert to RelationshipInfo objects.
+
+    Relationships are considered duplicates if they have the same
+    source entity, target entity, and relationship type.
+
+    Args:
+        all_relationships: List of raw relationship dictionaries.
+
+    Returns:
+        List of deduplicated RelationshipInfo objects.
+    """
+    # Group by (source, target, type)
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+
+    for rel in all_relationships:
+        # Normalize entity names for grouping
+        source_norm = _normalize_entity_name(rel["source_entity"])
+        target_norm = _normalize_entity_name(rel["target_entity"])
+        key = (source_norm, target_norm, rel["relationship_type"])
+
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(rel)
+
+    # Convert to RelationshipInfo objects
+    results: list[RelationshipInfo] = []
+
+    for (source_norm, target_norm, rel_type), occurrences in grouped.items():
+        # Use the first occurrence for canonical names and evidence
+        first = occurrences[0]
+
+        # Collect all evidence texts
+        evidence_texts = list({r["evidence"] for r in occurrences})
+        evidence = evidence_texts[0] if len(evidence_texts) == 1 else evidence_texts[0]
+
+        confidence = _calculate_relationship_confidence(first, len(occurrences))
+
+        # Filter by minimum confidence
+        if confidence >= MIN_RELATIONSHIP_CONFIDENCE:
+            results.append(
+                RelationshipInfo(
+                    source_entity=first["source_entity"],
+                    target_entity=first["target_entity"],
+                    relationship_type=rel_type,
+                    evidence=evidence,
+                    confidence=confidence,
+                )
+            )
+
+    # Sort by confidence (descending)
+    results.sort(key=lambda r: -r.confidence)
+
+    return results
+
+
+# =============================================================================
 # Activities
 # =============================================================================
 
@@ -538,34 +962,150 @@ async def extract_entities_mock(input: ExtractEntitiesInput) -> ExtractEntitiesO
 @activity.defn
 async def extract_relationships(input: ExtractRelationshipsInput) -> ExtractRelationshipsOutput:
     """
-    Extract relationships between entities.
+    Extract relationships between entities using spaCy dependency parsing.
 
-    Uses LLM-based extraction with structured output to identify
-    relationships mentioned in the document.
+    This activity analyzes the document content to find relationships
+    between previously extracted entities. It uses:
+    1. Dependency parsing to identify subject-verb-object patterns
+    2. Prepositional phrase analysis
+    3. Co-occurrence heuristics as fallback
+
+    Relationship types extracted include:
+    - works_for, works_with (person-organization)
+    - owns, controls (ownership)
+    - located_in, headquarters_in (location)
+    - member_of, subsidiary_of (membership)
+    - participated_in, occurred_at (events)
+    - associated_with (generic fallback)
 
     Args:
-        input: Relationship extraction input with content and entities
+        input: Relationship extraction input with content and entities.
 
     Returns:
-        List of extracted relationships
+        List of extracted relationships with confidence scores.
     """
-    activity.logger.info(f"Extracting relationships from document {input.document_id}")
+    activity.logger.info(
+        f"Extracting relationships from document {input.document_id} "
+        f"({len(input.entities)} entities)"
+    )
+
+    # Handle case with no or single entity
+    if len(input.entities) < 2:
+        activity.logger.info("Not enough entities for relationship extraction")
+        activity.heartbeat()
+        return ExtractRelationshipsOutput(relationships=[])
+
+    # Build entity lookup for efficient matching
+    entity_lookup = _build_entity_lookup(input.entities)
+
+    # Load spaCy model
+    nlp = _get_spacy_model()
+
+    # Process content sentence by sentence
+    doc = nlp(input.content)
+
+    all_relationships: list[dict[str, Any]] = []
+    sentences_processed = 0
+
+    for sent in doc.sents:
+        # Extract relationships from this sentence
+        sent_relationships = _extract_relationships_from_sentence(sent, entity_lookup)
+        all_relationships.extend(sent_relationships)
+
+        sentences_processed += 1
+
+        # Heartbeat periodically
+        if sentences_processed % 50 == 0:
+            activity.heartbeat(f"Processed {sentences_processed} sentences")
+
+    activity.logger.info(f"Found {len(all_relationships)} raw relationships")
+
+    # Deduplicate and convert to RelationshipInfo
+    relationships = _deduplicate_relationships(all_relationships)
+
+    activity.logger.info(
+        f"Extracted {len(relationships)} unique relationships from document {input.document_id}"
+    )
+
+    # Final heartbeat
+    activity.heartbeat()
+
+    return ExtractRelationshipsOutput(relationships=relationships)
+
+
+@activity.defn
+async def extract_relationships_mock(
+    input: ExtractRelationshipsInput,
+) -> ExtractRelationshipsOutput:
+    """
+    Mock relationship extraction for testing without spaCy.
+
+    Returns configurable test relationships based on entity patterns.
+    Useful for unit testing workflows without loading NLP models.
+
+    Args:
+        input: Relationship extraction input.
+
+    Returns:
+        Mock extracted relationships.
+    """
+    activity.logger.info(f"Mock extracting relationships from document {input.document_id}")
 
     relationships: list[RelationshipInfo] = []
 
-    # TODO: Implement actual relationship extraction
-    # In real implementation:
-    # 1. For each pair of entities, check if relationship exists
-    # 2. Use LLM with structured output to extract:
-    #    - Relationship type
-    #    - Evidence text
-    #    - Confidence score
-    # 3. Filter low-confidence relationships
+    # Build simple entity name set for pattern matching
+    entity_names = set()
+    entity_types: dict[str, str] = {}
 
-    # Heartbeat to indicate progress
+    for entity in input.entities:
+        if isinstance(entity, dict):
+            name = entity.get("name", "").lower()
+            entity_type = entity.get("entity_type", "unknown")
+        else:
+            name = entity.name.lower()
+            entity_type = entity.entity_type
+
+        entity_names.add(name)
+        entity_types[name] = entity_type
+
+    # Check for common test patterns
+    content_lower = input.content.lower()
+
+    # Person works for Organization
+    if any("john" in n or "doe" in n for n in entity_names):
+        if any("acme" in n or "corp" in n for n in entity_names):
+            if "works" in content_lower or "employee" in content_lower or "ceo" in content_lower:
+                relationships.append(
+                    RelationshipInfo(
+                        source_entity="John Doe",
+                        target_entity="Acme Corp",
+                        relationship_type="works_for",
+                        evidence="John Doe works at Acme Corp.",
+                        confidence=0.8,
+                    )
+                )
+
+    # Organization located in Location
+    has_acme = any("acme" in n for n in entity_names)
+    has_location = any("new york" in n or "york" in n or "nyc" in n for n in entity_names)
+    if has_acme and has_location:
+        if (
+            "located" in content_lower
+            or "headquarter" in content_lower  # matches headquarters, headquartered
+            or "based" in content_lower
+        ):
+            relationships.append(
+                RelationshipInfo(
+                    source_entity="Acme Corp",
+                    target_entity="New York",
+                    relationship_type="headquarters_in",
+                    evidence="Acme Corp is headquartered in New York.",
+                    confidence=0.75,
+                )
+            )
+
     activity.heartbeat()
-
-    activity.logger.info(f"Extracted {len(relationships)} relationships")
+    activity.logger.info(f"Mock extracted {len(relationships)} relationships")
 
     return ExtractRelationshipsOutput(relationships=relationships)
 
