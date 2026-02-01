@@ -664,3 +664,208 @@ class TestIngestionWorkflowOutput:
         assert output.success is False
         assert output.error_message == "Out of memory"
         assert output.error_step == "chunking"
+
+    def test_partial_success_output(self):
+        """Test creating output with partial success (some failures but continued)."""
+        status = IngestionWorkflowStatus(
+            current_step=IngestionStep.COMPLETED,
+            progress_percent=100,
+            message="Completed with warnings",
+        )
+
+        output = IngestionWorkflowOutput(
+            document_id="doc-123",
+            success=True,
+            final_status=status,
+            document_type="pdf",
+            page_count=10,
+            word_count=1000,
+            chunks_created=5,
+            indexed_vector=True,
+            indexed_fulltext=False,  # Failed but continued
+            indexed_graph=True,
+            partial_success=True,
+            indexing_failures=["fulltext: Connection refused"],
+        )
+
+        assert output.success is True
+        assert output.partial_success is True
+        assert output.indexed_vector is True
+        assert output.indexed_fulltext is False
+        assert len(output.indexing_failures) == 1
+        assert "fulltext" in output.indexing_failures[0]
+
+    def test_output_defaults(self):
+        """Test that output has correct defaults for partial failure tracking."""
+        status = IngestionWorkflowStatus(
+            current_step=IngestionStep.COMPLETED,
+            progress_percent=100,
+            message="Done",
+        )
+
+        output = IngestionWorkflowOutput(
+            document_id="doc-123",
+            success=True,
+            final_status=status,
+        )
+
+        # Check new default fields
+        assert output.partial_success is False
+        assert output.indexing_failures == []
+        assert output.extraction_failures == []
+
+
+# =============================================================================
+# ParallelIndexingResult Tests
+# =============================================================================
+
+
+class TestParallelIndexingResult:
+    """Tests for ParallelIndexingResult dataclass."""
+
+    def test_default_values(self):
+        """Test that ParallelIndexingResult has correct defaults."""
+        from ingestion_worker.workflows.document_ingestion import ParallelIndexingResult
+
+        result = ParallelIndexingResult()
+
+        assert result.vector_success is False
+        assert result.fulltext_success is False
+        assert result.vector_error is None
+        assert result.fulltext_error is None
+        assert result.vector_indexed_count == 0
+        assert result.vector_collection_name is None
+        assert result.fulltext_index_name is None
+
+    def test_successful_result(self):
+        """Test creating a fully successful result."""
+        from ingestion_worker.workflows.document_ingestion import ParallelIndexingResult
+
+        result = ParallelIndexingResult(
+            vector_success=True,
+            fulltext_success=True,
+            vector_indexed_count=50,
+            vector_collection_name="documents_v1",
+            fulltext_index_name="documents",
+        )
+
+        assert result.vector_success is True
+        assert result.fulltext_success is True
+        assert result.vector_error is None
+        assert result.fulltext_error is None
+        assert result.vector_indexed_count == 50
+
+    def test_partial_failure_vector(self):
+        """Test result when vector indexing fails."""
+        from ingestion_worker.workflows.document_ingestion import ParallelIndexingResult
+
+        result = ParallelIndexingResult(
+            vector_success=False,
+            vector_error="Connection refused to Qdrant",
+            fulltext_success=True,
+            fulltext_index_name="documents",
+        )
+
+        assert result.vector_success is False
+        assert result.vector_error == "Connection refused to Qdrant"
+        assert result.fulltext_success is True
+        assert result.fulltext_error is None
+
+    def test_partial_failure_fulltext(self):
+        """Test result when fulltext indexing fails."""
+        from ingestion_worker.workflows.document_ingestion import ParallelIndexingResult
+
+        result = ParallelIndexingResult(
+            vector_success=True,
+            vector_indexed_count=50,
+            vector_collection_name="documents_v1",
+            fulltext_success=False,
+            fulltext_error="MeiliSearch timeout",
+        )
+
+        assert result.vector_success is True
+        assert result.fulltext_success is False
+        assert result.fulltext_error == "MeiliSearch timeout"
+
+    def test_both_failures(self):
+        """Test result when both indexing operations fail."""
+        from ingestion_worker.workflows.document_ingestion import ParallelIndexingResult
+
+        result = ParallelIndexingResult(
+            vector_success=False,
+            vector_error="Qdrant connection refused",
+            fulltext_success=False,
+            fulltext_error="MeiliSearch unreachable",
+        )
+
+        assert result.vector_success is False
+        assert result.fulltext_success is False
+        assert "Qdrant" in result.vector_error
+        assert "MeiliSearch" in result.fulltext_error
+
+
+# =============================================================================
+# Parallelism Input Options Tests
+# =============================================================================
+
+
+class TestParallelismOptions:
+    """Tests for parallelism-related input options."""
+
+    def test_default_parallelism_options(self, sample_document_id: str, sample_tenant_id: str):
+        """Test that parallelism options have correct defaults."""
+        workflow_input = IngestionWorkflowInput(
+            document_id=sample_document_id,
+            tenant_id=sample_tenant_id,
+            storage_bucket="test-bucket",
+            storage_key="test/doc.pdf",
+        )
+
+        # Parallel indexing should be enabled by default
+        assert workflow_input.enable_parallel_indexing is True
+        assert workflow_input.embedding_batch_size == 50
+        assert workflow_input.max_parallel_activities == 5
+
+        # Continue on failure should be off by default
+        assert workflow_input.continue_on_indexing_failure is False
+        assert workflow_input.continue_on_extraction_failure is False
+
+    def test_disable_parallel_indexing(self, sample_document_id: str, sample_tenant_id: str):
+        """Test disabling parallel indexing."""
+        workflow_input = IngestionWorkflowInput(
+            document_id=sample_document_id,
+            tenant_id=sample_tenant_id,
+            storage_bucket="test-bucket",
+            storage_key="test/doc.pdf",
+            enable_parallel_indexing=False,
+        )
+
+        assert workflow_input.enable_parallel_indexing is False
+
+    def test_continue_on_failure_options(self, sample_document_id: str, sample_tenant_id: str):
+        """Test enabling continue on failure options."""
+        workflow_input = IngestionWorkflowInput(
+            document_id=sample_document_id,
+            tenant_id=sample_tenant_id,
+            storage_bucket="test-bucket",
+            storage_key="test/doc.pdf",
+            continue_on_indexing_failure=True,
+            continue_on_extraction_failure=True,
+        )
+
+        assert workflow_input.continue_on_indexing_failure is True
+        assert workflow_input.continue_on_extraction_failure is True
+
+    def test_custom_batch_size(self, sample_document_id: str, sample_tenant_id: str):
+        """Test setting custom batch size for embeddings."""
+        workflow_input = IngestionWorkflowInput(
+            document_id=sample_document_id,
+            tenant_id=sample_tenant_id,
+            storage_bucket="test-bucket",
+            storage_key="test/doc.pdf",
+            embedding_batch_size=100,
+            max_parallel_activities=10,
+        )
+
+        assert workflow_input.embedding_batch_size == 100
+        assert workflow_input.max_parallel_activities == 10

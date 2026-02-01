@@ -13,11 +13,11 @@
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
 | Phase 0 | 89 | 48 | 0 | 0 |
-| Phase 1 | 92 | 8 | 0 | 0 |
+| Phase 1 | 92 | 38 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 56 | 0 | 0 |
+| **Total** | **393** | 86 | 0 | 0 |
 
 ---
 
@@ -419,13 +419,13 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E2-S1-T1 | Create IngestionWorkflowInput dataclass | S | Pending | P0-E2-S6 |
-| P1-E2-S1-T2 | Define DocumentIngestionWorkflow class | M | Pending | T1 |
-| P1-E2-S1-T3 | Implement workflow steps orchestration | L | Pending | T2 |
-| P1-E2-S1-T4 | Add query methods (get_progress, get_status) | M | Pending | T3 |
-| P1-E2-S1-T5 | Add signal methods (cancel, pause) | M | Pending | T3 |
-| P1-E2-S1-T6 | Implement error handling and compensation | M | Pending | T3 |
-| P1-E2-S1-T7 | Write workflow unit tests | M | Pending | T1-T6 |
+| P1-E2-S1-T1 | Create IngestionWorkflowInput dataclass | S | Done | P0-E2-S6 |
+| P1-E2-S1-T2 | Define DocumentIngestionWorkflow class | M | Done | T1 |
+| P1-E2-S1-T3 | Implement workflow steps orchestration | L | Done | T2 |
+| P1-E2-S1-T4 | Add query methods (get_progress, get_status) | M | Done | T3 |
+| P1-E2-S1-T5 | Add signal methods (cancel, pause) | M | Done | T3 |
+| P1-E2-S1-T6 | Implement error handling and compensation | M | Done | T3 |
+| P1-E2-S1-T7 | Write workflow unit tests | M | Done | T1-T6 |
 
 ---
 
@@ -433,12 +433,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E2-S2-T1 | Create DocumentType enum | S | Pending | P1-E2-S1 |
-| P1-E2-S2-T2 | Implement classify_document activity | M | Pending | T1 |
-| P1-E2-S2-T3 | Implement magic bytes detection | M | Pending | T2 |
-| P1-E2-S2-T4 | Implement file extension detection | S | Pending | T2 |
-| P1-E2-S2-T5 | Store classification in Document record | S | Pending | T2 |
-| P1-E2-S2-T6 | Write activity unit tests | M | Pending | T2-T5 |
+| P1-E2-S2-T1 | Create DocumentType enum | S | Done | P1-E2-S1 |
+| P1-E2-S2-T2 | Implement classify_document activity | M | Done | T1 |
+| P1-E2-S2-T3 | Implement magic bytes detection | M | Done | T2 |
+| P1-E2-S2-T4 | Implement file extension detection | S | Done | T2 |
+| P1-E2-S2-T5 | Store classification in Document record | S | Done | T2 |
+| P1-E2-S2-T6 | Write activity unit tests | M | Done | T2-T5 |
 
 ---
 
@@ -446,12 +446,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E2-S3-T1 | Implement download_file activity | M | Pending | P1-E2-S1 |
-| P1-E2-S3-T2 | Add HTTP/HTTPS download with headers | M | Pending | T1 |
-| P1-E2-S3-T3 | Integrate yt-dlp for YouTube downloads | M | Pending | T1 |
-| P1-E2-S3-T4 | Implement activity heartbeat | S | Pending | T1 |
-| P1-E2-S3-T5 | Store downloaded file in MinIO | M | Pending | T1 |
-| P1-E2-S3-T6 | Write activity unit tests | M | Pending | T1-T5 |
+| P1-E2-S3-T1 | Implement download_file activity | M | Done | P1-E2-S1 |
+| P1-E2-S3-T2 | Add HTTP/HTTPS download with headers | M | Done | T1 |
+| P1-E2-S3-T3 | Integrate yt-dlp for YouTube downloads | M | Done | T1 |
+| P1-E2-S3-T4 | Implement activity heartbeat | S | Done | T1 |
+| P1-E2-S3-T5 | Store downloaded file in MinIO | M | Done | T1 |
+| P1-E2-S3-T6 | Write activity unit tests | M | Done | T1-T5 |
 
 ---
 
@@ -459,11 +459,11 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E2-S4-T1 | Implement fan-out logic based on document type | M | Pending | P1-E2-S2 |
-| P1-E2-S4-T2 | Use asyncio.gather for parallel activities | M | Pending | T1 |
-| P1-E2-S4-T3 | Implement result aggregation | M | Pending | T2 |
-| P1-E2-S4-T4 | Handle partial failures | M | Pending | T3 |
-| P1-E2-S4-T5 | Configure parallelism limits | S | Pending | T2 |
+| P1-E2-S4-T1 | Implement fan-out logic based on document type | M | Done | P1-E2-S2 |
+| P1-E2-S4-T2 | Use asyncio.gather for parallel activities | M | Done | T1 |
+| P1-E2-S4-T3 | Implement result aggregation | M | Done | T2 |
+| P1-E2-S4-T4 | Handle partial failures | M | Done | T3 |
+| P1-E2-S4-T5 | Configure parallelism limits | S | Done | T2 |
 
 ---
 

@@ -120,6 +120,15 @@ class IngestionWorkflowInput:
     chunk_size: int = 1000  # Target tokens per chunk
     chunk_overlap: int = 200  # Overlap between chunks
 
+    # Parallelism options
+    enable_parallel_indexing: bool = True  # Run vector and fulltext indexing in parallel
+    embedding_batch_size: int = 50  # Number of chunks to embed in parallel batches
+    max_parallel_activities: int = 5  # Maximum concurrent activities
+
+    # Error handling options
+    continue_on_indexing_failure: bool = False  # Continue if one index type fails
+    continue_on_extraction_failure: bool = False  # Continue if entity/relationship extraction fails
+
     # Project association (optional)
     project_id: str | None = None
 
@@ -150,6 +159,19 @@ class IngestionWorkflowStatus:
 
 
 @dataclass
+class ParallelIndexingResult:
+    """Result of parallel indexing operations."""
+
+    vector_success: bool = False
+    fulltext_success: bool = False
+    vector_error: str | None = None
+    fulltext_error: str | None = None
+    vector_indexed_count: int = 0
+    vector_collection_name: str | None = None
+    fulltext_index_name: str | None = None
+
+
+@dataclass
 class IngestionWorkflowOutput:
     """Output of the document ingestion workflow."""
 
@@ -174,6 +196,11 @@ class IngestionWorkflowOutput:
     indexed_vector: bool = False
     indexed_fulltext: bool = False
     indexed_graph: bool = False
+
+    # Partial success tracking
+    partial_success: bool = False  # True if some but not all operations succeeded
+    indexing_failures: list[str] = field(default_factory=list)  # Which indexes failed
+    extraction_failures: list[str] = field(default_factory=list)  # Which extractions failed
 
     # Error info
     error_message: str | None = None
@@ -625,49 +652,37 @@ class DocumentIngestionWorkflow:
                 f"Generated {len(embeddings_result.embeddings)} embeddings with model {embeddings_result.model}"
             )
 
-            # Step 5: Index in vector database (60%)
+            # Step 5-6: Index in vector database and fulltext search
+            # These can run in parallel if enabled
             await self._check_cancelled_or_paused()
-            self._update_status(IngestionStep.INDEXING_VECTOR, 60, "Indexing in vector database")
 
-            vector_indexed = DictObject(
-                await workflow.execute_activity(
-                    "index_vector",
-                    IndexVectorInput(
-                        document_id=input.document_id,
-                        tenant_id=input.tenant_id,
-                        project_id=input.project_id,
-                        chunks=chunked.chunks,
-                        embeddings=embeddings_result.embeddings,
-                    ),
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=DEFAULT_RETRY_POLICY,
-                )
-            )
-            log.info(
-                f"Indexed {vector_indexed.indexed_count} vectors in {vector_indexed.collection_name}"
+            indexing_result = await self._execute_parallel_indexing(
+                input=input,
+                chunked=chunked,
+                embeddings_result=embeddings_result,
+                parsed=parsed,
+                classification=classification,
+                log=log,
             )
 
-            # Step 6: Index in fulltext search (65%)
-            await self._check_cancelled_or_paused()
-            self._update_status(IngestionStep.INDEXING_FULLTEXT, 65, "Indexing in fulltext search")
+            # Track partial failures for indexing
+            indexing_failures: list[str] = []
+            if not indexing_result.vector_success:
+                indexing_failures.append(f"vector: {indexing_result.vector_error}")
+            if not indexing_result.fulltext_success:
+                indexing_failures.append(f"fulltext: {indexing_result.fulltext_error}")
 
-            fulltext_indexed = DictObject(
-                await workflow.execute_activity(
-                    "index_fulltext",
-                    IndexFulltextInput(
-                        document_id=input.document_id,
-                        tenant_id=input.tenant_id,
-                        project_id=input.project_id,
-                        title=input.source_filename or f"Document {input.document_id}",
-                        content=parsed.content,
-                        document_type=classification.document_type,
-                        metadata=input.metadata,
-                    ),
-                    start_to_close_timeout=timedelta(minutes=5),
-                    retry_policy=DEFAULT_RETRY_POLICY,
-                )
-            )
-            log.info(f"Fulltext indexed: {fulltext_indexed.indexed}")
+            # If both failed and we don't continue on failure, raise
+            if not indexing_result.vector_success and not indexing_result.fulltext_success:
+                if not input.continue_on_indexing_failure:
+                    raise RuntimeError(f"Both indexing operations failed: {indexing_failures}")
+                log.warning(f"Both indexing operations failed but continuing: {indexing_failures}")
+
+            # If one failed and we don't continue on failure, raise
+            if indexing_failures and not input.continue_on_indexing_failure:
+                raise RuntimeError(f"Indexing failed: {indexing_failures}")
+            elif indexing_failures:
+                log.warning(f"Partial indexing failure (continuing): {indexing_failures}")
 
             # Entity extraction (if not skipped)
             entities_output = DictObject({"entities": []})
@@ -752,19 +767,23 @@ class DocumentIngestionWorkflow:
             await self._check_cancelled_or_paused()
             self._update_status(IngestionStep.FINALIZING, 95, "Updating document status")
 
+            # Determine overall status based on partial failures
+            has_partial_failure = bool(indexing_failures)
+            status = "completed" if not has_partial_failure else "completed_with_warnings"
+
             await workflow.execute_activity(
                 "update_document_status",
                 UpdateDocumentStatusInput(
                     document_id=input.document_id,
                     tenant_id=input.tenant_id,
-                    status="completed",
+                    status=status,
                     document_type=classification.document_type,
                     mime_type=classification.mime_type,
                     page_count=parsed.page_count,
                     word_count=parsed.word_count,
                     language=parsed.language,
-                    is_indexed_vector=True,
-                    is_indexed_fulltext=fulltext_indexed.indexed,
+                    is_indexed_vector=indexing_result.vector_success,
+                    is_indexed_fulltext=indexing_result.fulltext_success,
                     is_indexed_graph=graph_output.nodes_created > 0,
                 ),
                 start_to_close_timeout=timedelta(minutes=1),
@@ -786,9 +805,11 @@ class DocumentIngestionWorkflow:
                 chunks_created=chunked.total_chunks,
                 entities_extracted=len(entities_output.entities),
                 relationships_extracted=len(relationships_output.relationships),
-                indexed_vector=True,
-                indexed_fulltext=fulltext_indexed.indexed,
+                indexed_vector=indexing_result.vector_success,
+                indexed_fulltext=indexing_result.fulltext_success,
                 indexed_graph=graph_output.nodes_created > 0,
+                partial_success=has_partial_failure,
+                indexing_failures=indexing_failures,
             )
 
         except asyncio.CancelledError:
@@ -897,6 +918,165 @@ class DocumentIngestionWorkflow:
         # would be implemented as separate compensation activities.
 
         log.info(f"Compensation completed for document {self._input.document_id}")
+
+    async def _execute_parallel_indexing(
+        self,
+        input: IngestionWorkflowInput,
+        chunked: DictObject,
+        embeddings_result: DictObject,
+        parsed: DictObject,
+        classification: DictObject,
+        log: Any,
+    ) -> ParallelIndexingResult:
+        """
+        Execute vector and fulltext indexing, either in parallel or sequentially.
+
+        Args:
+            input: The workflow input parameters
+            chunked: The chunked document result
+            embeddings_result: The embeddings generation result
+            parsed: The parsed document result
+            classification: The classification result
+            log: The workflow logger
+
+        Returns:
+            ParallelIndexingResult with success/failure status for each index type
+        """
+        result = ParallelIndexingResult()
+
+        if input.enable_parallel_indexing:
+            # Execute both indexing operations in parallel
+            self._update_status(
+                IngestionStep.INDEXING_VECTOR,
+                60,
+                "Indexing in vector database and fulltext search (parallel)",
+            )
+
+            # Create tasks for parallel execution
+            vector_task = workflow.execute_activity(
+                "index_vector",
+                IndexVectorInput(
+                    document_id=input.document_id,
+                    tenant_id=input.tenant_id,
+                    project_id=input.project_id,
+                    chunks=chunked.chunks,
+                    embeddings=embeddings_result.embeddings,
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+
+            fulltext_task = workflow.execute_activity(
+                "index_fulltext",
+                IndexFulltextInput(
+                    document_id=input.document_id,
+                    tenant_id=input.tenant_id,
+                    project_id=input.project_id,
+                    title=input.source_filename or f"Document {input.document_id}",
+                    content=parsed.content,
+                    document_type=classification.document_type,
+                    metadata=input.metadata,
+                ),
+                start_to_close_timeout=timedelta(minutes=5),
+                retry_policy=DEFAULT_RETRY_POLICY,
+            )
+
+            # Execute both in parallel, capturing exceptions
+            results = await asyncio.gather(
+                vector_task,
+                fulltext_task,
+                return_exceptions=True,
+            )
+
+            vector_result, fulltext_result = results
+
+            # Process vector indexing result
+            if isinstance(vector_result, BaseException):
+                result.vector_success = False
+                result.vector_error = str(vector_result)
+                log.error(f"Vector indexing failed: {vector_result}")
+            else:
+                vector_indexed = DictObject(vector_result)
+                result.vector_success = True
+                result.vector_indexed_count = vector_indexed.indexed_count
+                result.vector_collection_name = vector_indexed.collection_name
+                log.info(
+                    f"Indexed {vector_indexed.indexed_count} vectors in {vector_indexed.collection_name}"
+                )
+
+            # Process fulltext indexing result
+            if isinstance(fulltext_result, BaseException):
+                result.fulltext_success = False
+                result.fulltext_error = str(fulltext_result)
+                log.error(f"Fulltext indexing failed: {fulltext_result}")
+            else:
+                fulltext_indexed = DictObject(fulltext_result)
+                result.fulltext_success = fulltext_indexed.indexed
+                result.fulltext_index_name = fulltext_indexed.index_name
+                log.info(f"Fulltext indexed in {fulltext_indexed.index_name}")
+
+        else:
+            # Execute sequentially (original behavior)
+            # Vector indexing
+            self._update_status(IngestionStep.INDEXING_VECTOR, 60, "Indexing in vector database")
+            try:
+                vector_indexed = DictObject(
+                    await workflow.execute_activity(
+                        "index_vector",
+                        IndexVectorInput(
+                            document_id=input.document_id,
+                            tenant_id=input.tenant_id,
+                            project_id=input.project_id,
+                            chunks=chunked.chunks,
+                            embeddings=embeddings_result.embeddings,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=DEFAULT_RETRY_POLICY,
+                    )
+                )
+                result.vector_success = True
+                result.vector_indexed_count = vector_indexed.indexed_count
+                result.vector_collection_name = vector_indexed.collection_name
+                log.info(
+                    f"Indexed {vector_indexed.indexed_count} vectors in {vector_indexed.collection_name}"
+                )
+            except Exception as e:
+                result.vector_success = False
+                result.vector_error = str(e)
+                log.error(f"Vector indexing failed: {e}")
+                if not input.continue_on_indexing_failure:
+                    raise
+
+            # Fulltext indexing
+            self._update_status(IngestionStep.INDEXING_FULLTEXT, 65, "Indexing in fulltext search")
+            try:
+                fulltext_indexed = DictObject(
+                    await workflow.execute_activity(
+                        "index_fulltext",
+                        IndexFulltextInput(
+                            document_id=input.document_id,
+                            tenant_id=input.tenant_id,
+                            project_id=input.project_id,
+                            title=input.source_filename or f"Document {input.document_id}",
+                            content=parsed.content,
+                            document_type=classification.document_type,
+                            metadata=input.metadata,
+                        ),
+                        start_to_close_timeout=timedelta(minutes=5),
+                        retry_policy=DEFAULT_RETRY_POLICY,
+                    )
+                )
+                result.fulltext_success = fulltext_indexed.indexed
+                result.fulltext_index_name = fulltext_indexed.index_name
+                log.info(f"Fulltext indexed in {fulltext_indexed.index_name}")
+            except Exception as e:
+                result.fulltext_success = False
+                result.fulltext_error = str(e)
+                log.error(f"Fulltext indexing failed: {e}")
+                if not input.continue_on_indexing_failure:
+                    raise
+
+        return result
 
     def _create_error_output(self, error_message: str) -> IngestionWorkflowOutput:
         """Create an error output."""
