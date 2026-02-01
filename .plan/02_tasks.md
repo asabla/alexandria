@@ -13,11 +13,11 @@
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
 | Phase 0 | 89 | 48 | 0 | 0 |
-| Phase 1 | 92 | 45 | 0 | 0 |
+| Phase 1 | 92 | 51 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 93 | 0 | 0 |
+| **Total** | **393** | 99 | 0 | 0 |
 
 ---
 
@@ -528,12 +528,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E4-S1-T1 | Create Chunk dataclass | S | Pending | P1-E3-S1 |
-| P1-E4-S1-T2 | Implement chunk_document activity | M | Pending | T1 |
-| P1-E4-S1-T3 | Implement semantic boundary detection | M | Pending | T2 |
-| P1-E4-S1-T4 | Configure chunk size and overlap | S | Pending | T2 |
-| P1-E4-S1-T5 | Preserve document structure metadata | M | Pending | T2 |
-| P1-E4-S1-T6 | Write activity unit tests | M | Pending | T2-T5 |
+| P1-E4-S1-T1 | Create Chunk dataclass | S | Done | P1-E3-S1 |
+| P1-E4-S1-T2 | Implement chunk_document activity | M | Done | T1 |
+| P1-E4-S1-T3 | Implement semantic boundary detection | M | Done | T2 |
+| P1-E4-S1-T4 | Configure chunk size and overlap | S | Done | T2 |
+| P1-E4-S1-T5 | Preserve document structure metadata | M | Done | T2 |
+| P1-E4-S1-T6 | Write activity unit tests | M | Done | T2-T5 |
 
 ---
 

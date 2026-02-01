@@ -14,6 +14,12 @@ from ingestion_worker.activities.parsing import (
     ParsedTable,
     ParsedImage,
 )
+from ingestion_worker.activities.chunking import (
+    ChunkingConfig,
+    SemanticChunker,
+    ChunkType,
+    chunk_text,
+)
 from ingestion_worker.activities.embedding_activities import (
     generate_embeddings,
 )
@@ -40,6 +46,11 @@ __all__ = [
     "DoclingParseResult",
     "ParsedTable",
     "ParsedImage",
+    # Semantic chunking
+    "ChunkingConfig",
+    "SemanticChunker",
+    "ChunkType",
+    "chunk_text",
     # Embedding activities
     "generate_embeddings",
     # Indexing activities

@@ -294,7 +294,22 @@ class ChunkDocumentInput:
 
 @dataclass
 class ChunkInfo:
-    """Information about a single chunk."""
+    """Information about a single chunk.
+
+    Enhanced to include semantic context for better RAG retrieval.
+
+    Attributes:
+        sequence_number: Position of this chunk (0-indexed)
+        content: The chunk text content
+        content_hash: SHA-256 hash of content for deduplication
+        start_char: Start character position in original document
+        end_char: End character position in original document
+        token_count: Estimated token count
+        page_number: Page number if known
+        heading_context: List of headings above this chunk (hierarchy path)
+        chunk_type: Type of content (text, code, table, list, etc.)
+        metadata: Additional metadata dictionary
+    """
 
     sequence_number: int
     content: str
@@ -303,6 +318,10 @@ class ChunkInfo:
     end_char: int
     token_count: int
     page_number: int | None = None
+    # Semantic context fields (new, with defaults for backward compatibility)
+    heading_context: list[str] = field(default_factory=list)
+    chunk_type: str = "text"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

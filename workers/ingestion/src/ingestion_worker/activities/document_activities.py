@@ -4,7 +4,6 @@ Document processing activities.
 Activities for document classification, parsing, chunking, and status updates.
 """
 
-import hashlib
 import os
 
 from temporalio import activity
@@ -239,78 +238,74 @@ async def chunk_document(input: ChunkDocumentInput) -> ChunkDocumentOutput:
     Split document content into chunks for embedding.
 
     Uses semantic chunking to preserve meaning across chunk boundaries.
-    Respects paragraph and sentence boundaries when possible.
+    Respects sentence, paragraph, and heading boundaries.
+    Preserves code blocks and tables as atomic units.
+
+    Features:
+    - Sentence boundary detection
+    - Heading hierarchy tracking for context
+    - Code block integrity (never split)
+    - Table integrity (never split)
+    - Configurable chunk size and overlap
 
     Args:
         input: Chunk input with content and chunking parameters
 
     Returns:
-        List of chunks with metadata
+        List of chunks with metadata including heading context
     """
+    from ingestion_worker.activities.chunking import (
+        ChunkingConfig,
+        SemanticChunker,
+        ChunkInfo as SemanticChunkInfo,
+    )
+
     activity.logger.info(f"Chunking document {input.document_id}")
 
     content = input.content
     chunk_size = input.chunk_size
     chunk_overlap = input.chunk_overlap
 
-    # Simple chunking implementation
-    # In production, use semantic chunking with sentence boundaries
-    chunks: list[ChunkInfo] = []
+    # Configure semantic chunker
+    config = ChunkingConfig(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        respect_sentence_boundaries=True,
+        respect_heading_boundaries=True,
+        preserve_code_blocks=True,
+        preserve_tables=True,
+    )
 
-    # Split by paragraphs first
-    paragraphs = content.split("\n\n")
+    # Create chunker and process content
+    chunker = SemanticChunker(config)
+    semantic_chunks = chunker.chunk(content)
 
-    current_chunk = ""
-    current_start = 0
-    sequence = 0
-
-    for para in paragraphs:
-        # Rough token estimation (words * 1.3)
-        estimated_tokens = int(len(para.split()) * 1.3)
-        current_tokens = int(len(current_chunk.split()) * 1.3)
-
-        if current_tokens + estimated_tokens > chunk_size and current_chunk:
-            # Save current chunk
-            chunk_hash = hashlib.sha256(current_chunk.encode()).hexdigest()
-            chunks.append(
-                ChunkInfo(
-                    sequence_number=sequence,
-                    content=current_chunk.strip(),
-                    content_hash=chunk_hash,
-                    start_char=current_start,
-                    end_char=current_start + len(current_chunk),
-                    token_count=current_tokens,
-                    page_number=None,  # Would be set from parsing metadata
-                )
-            )
-            sequence += 1
-
-            # Start new chunk with overlap
-            overlap_words = current_chunk.split()[-chunk_overlap:] if chunk_overlap else []
-            current_chunk = " ".join(overlap_words) + "\n\n" + para if overlap_words else para
-            current_start = current_start + len(current_chunk) - len(current_chunk)
-        else:
-            if current_chunk:
-                current_chunk += "\n\n" + para
-            else:
-                current_chunk = para
-
-    # Don't forget the last chunk
-    if current_chunk.strip():
-        chunk_hash = hashlib.sha256(current_chunk.encode()).hexdigest()
-        chunks.append(
-            ChunkInfo(
-                sequence_number=sequence,
-                content=current_chunk.strip(),
-                content_hash=chunk_hash,
-                start_char=current_start,
-                end_char=current_start + len(current_chunk),
-                token_count=int(len(current_chunk.split()) * 1.3),
-                page_number=None,
-            )
+    # Convert to workflow ChunkInfo format (they have the same fields now)
+    chunks: list[ChunkInfo] = [
+        ChunkInfo(
+            sequence_number=sc.sequence_number,
+            content=sc.content,
+            content_hash=sc.content_hash,
+            start_char=sc.start_char,
+            end_char=sc.end_char,
+            token_count=sc.token_count,
+            page_number=sc.page_number,
+            heading_context=sc.heading_context,
+            chunk_type=sc.chunk_type,
+            metadata=sc.metadata,
         )
+        for sc in semantic_chunks
+    ]
 
-    activity.logger.info(f"Created {len(chunks)} chunks")
+    activity.logger.info(
+        f"Created {len(chunks)} chunks using semantic chunking",
+        extra={
+            "document_id": input.document_id,
+            "chunk_count": len(chunks),
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+        },
+    )
 
     return ChunkDocumentOutput(
         chunks=chunks,
