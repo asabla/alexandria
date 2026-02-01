@@ -34,6 +34,7 @@ from ingestion_worker.activities.embedding_activities import (
 )
 from ingestion_worker.activities.indexing_activities import (
     index_vector,
+    index_vector_mock,
     index_fulltext,
 )
 from ingestion_worker.activities.extraction_activities import (
@@ -71,6 +72,7 @@ __all__ = [
     "generate_embeddings_mock",
     # Indexing activities
     "index_vector",
+    "index_vector_mock",
     "index_fulltext",
     # Extraction activities
     "extract_entities",

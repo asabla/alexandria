@@ -13,11 +13,11 @@
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
 | Phase 0 | 89 | 48 | 0 | 0 |
-| Phase 1 | 92 | 57 | 0 | 0 |
+| Phase 1 | 92 | 63 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 105 | 0 | 0 |
+| **Total** | **393** | 111 | 0 | 0 |
 
 ---
 
@@ -554,12 +554,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E4-S3-T1 | Implement index_to_qdrant activity | M | Pending | P0-E2-S3, P1-E4-S2 |
-| P1-E4-S3-T2 | Implement batch upsert | M | Pending | T1 |
-| P1-E4-S3-T3 | Store dense and sparse vectors | M | Pending | T1 |
-| P1-E4-S3-T4 | Configure payload (document_id, chunk_index, etc.) | S | Pending | T1 |
-| P1-E4-S3-T5 | Use deterministic point IDs for idempotency | S | Pending | T1 |
-| P1-E4-S3-T6 | Write activity unit tests | M | Pending | T1-T5 |
+| P1-E4-S3-T1 | Implement index_to_qdrant activity | M | Done | P0-E2-S3, P1-E4-S2 |
+| P1-E4-S3-T2 | Implement batch upsert | M | Done | T1 |
+| P1-E4-S3-T3 | Store dense and sparse vectors | M | Done | T1 |
+| P1-E4-S3-T4 | Configure payload (document_id, chunk_index, etc.) | S | Done | T1 |
+| P1-E4-S3-T5 | Use deterministic point IDs for idempotency | S | Done | T1 |
+| P1-E4-S3-T6 | Write activity unit tests | M | Done | T1-T5 |
 
 ---
 
