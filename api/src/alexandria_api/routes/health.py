@@ -1,10 +1,21 @@
 """Health check endpoints."""
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+
+from alexandria_api.config import Settings, get_settings
+from alexandria_api.dependencies import (
+    check_database_health,
+    check_minio_health,
+    check_qdrant_health,
+    check_neo4j_health,
+    check_meilisearch_health,
+    check_temporal_health,
+)
 
 router = APIRouter()
 
@@ -33,6 +44,8 @@ async def health_check() -> HealthStatus:
 
     Returns the application health status. Used by load balancers
     and container orchestrators for liveness probes.
+
+    This endpoint always returns quickly and only checks if the API is running.
     """
     return HealthStatus(
         status="healthy",
@@ -45,29 +58,79 @@ async def health_check() -> HealthStatus:
 
 
 @router.get("/ready", response_model=ReadinessStatus)
-async def readiness_check() -> ReadinessStatus:
+async def readiness_check(
+    settings: Settings = Depends(get_settings),
+) -> ReadinessStatus:
     """
     Readiness check endpoint.
 
     Checks if all required services are available.
     Used by container orchestrators for readiness probes.
 
-    TODO: Implement actual service checks (PostgreSQL, MinIO, etc.)
+    Services are checked in parallel for faster response times.
     """
-    # TODO: Check database connection
-    # TODO: Check MinIO connection
-    # TODO: Check Qdrant connection
-    # TODO: Check Neo4j connection
-    # TODO: Check MeiliSearch connection
-    # TODO: Check Temporal connection
+    # Run all health checks in parallel
+    results = await asyncio.gather(
+        check_database_health(settings),
+        check_minio_health(settings),
+        check_qdrant_health(settings),
+        check_neo4j_health(settings),
+        check_meilisearch_health(settings),
+        check_temporal_health(settings),
+        return_exceptions=True,
+    )
 
     services = {
-        "database": True,  # TODO: Actual check
-        "minio": True,  # TODO: Actual check
-        "qdrant": True,  # TODO: Actual check
-        "neo4j": True,  # TODO: Actual check
-        "meilisearch": True,  # TODO: Actual check
-        "temporal": True,  # TODO: Actual check
+        "database": results[0] if isinstance(results[0], bool) else False,
+        "minio": results[1] if isinstance(results[1], bool) else False,
+        "qdrant": results[2] if isinstance(results[2], bool) else False,
+        "neo4j": results[3] if isinstance(results[3], bool) else False,
+        "meilisearch": results[4] if isinstance(results[4], bool) else False,
+        "temporal": results[5] if isinstance(results[5], bool) else False,
+    }
+
+    # Core services that must be healthy for the API to be ready
+    core_services = ["database"]
+    core_ready = all(services.get(s, False) for s in core_services)
+
+    # Optional services - API can still work without them
+    all_ready = all(services.values())
+
+    return ReadinessStatus(
+        ready=core_ready,  # Only require database for basic readiness
+        timestamp=datetime.now(UTC),
+        services=services,
+    )
+
+
+@router.get("/ready/strict", response_model=ReadinessStatus)
+async def strict_readiness_check(
+    settings: Settings = Depends(get_settings),
+) -> ReadinessStatus:
+    """
+    Strict readiness check endpoint.
+
+    Same as /ready but requires ALL services to be healthy.
+    Use this for canary deployments or when full functionality is required.
+    """
+    # Run all health checks in parallel
+    results = await asyncio.gather(
+        check_database_health(settings),
+        check_minio_health(settings),
+        check_qdrant_health(settings),
+        check_neo4j_health(settings),
+        check_meilisearch_health(settings),
+        check_temporal_health(settings),
+        return_exceptions=True,
+    )
+
+    services = {
+        "database": results[0] if isinstance(results[0], bool) else False,
+        "minio": results[1] if isinstance(results[1], bool) else False,
+        "qdrant": results[2] if isinstance(results[2], bool) else False,
+        "neo4j": results[3] if isinstance(results[3], bool) else False,
+        "meilisearch": results[4] if isinstance(results[4], bool) else False,
+        "temporal": results[5] if isinstance(results[5], bool) else False,
     }
 
     all_ready = all(services.values())
