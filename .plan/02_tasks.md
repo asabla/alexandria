@@ -12,12 +12,12 @@
 
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
-| Phase 0 | 89 | 34 | 0 | 0 |
+| Phase 0 | 89 | 35 | 0 | 0 |
 | Phase 1 | 92 | 0 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 34 | 0 | 0 |
+| **Total** | **393** | 35 | 0 | 0 |
 
 ---
 
@@ -49,7 +49,7 @@
 | P0-E1-S2-T4 | Configure pytest and coverage settings | S | Done | T1 |
 | P0-E1-S2-T5 | Install pre-commit and set up hooks | S | Pending | P0-E1-S1-T2 |
 | P0-E1-S2-T6 | Create VS Code workspace settings | S | Done | T2, T3 |
-| P0-E1-S2-T7 | Generate initial uv.lock file | S | Pending | T1 |
+| P0-E1-S2-T7 | Generate initial uv.lock file | S | Done | T1 |
 
 ---
 
