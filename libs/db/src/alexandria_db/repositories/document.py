@@ -117,11 +117,11 @@ class DocumentRepository(SoftDeleteRepository[DocumentModel]):
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def get_by_hash(self, content_hash: str) -> DocumentModel | None:
-        """Get a document by content hash (for deduplication)."""
+    async def get_by_hash(self, file_hash: str) -> DocumentModel | None:
+        """Get a document by file hash (for deduplication)."""
         stmt = select(self.model_class).where(
             self.model_class.tenant_id == self.tenant_id,
-            self.model_class.content_hash == content_hash,
+            self.model_class.file_hash == file_hash,
             self.model_class.deleted_at.is_(None),
         )
         result = await self.session.execute(stmt)
@@ -197,7 +197,7 @@ class ChunkRepository(SoftDeleteRepository[ChunkModel]):
                 self.model_class.document_id == document_id,
                 self.model_class.tenant_id == self.tenant_id,
             )
-            .order_by(self.model_class.chunk_index)
+            .order_by(self.model_class.sequence_number)
         )
         if offset:
             stmt = stmt.offset(offset)
@@ -206,16 +206,16 @@ class ChunkRepository(SoftDeleteRepository[ChunkModel]):
         result = await self.session.execute(stmt)
         return result.scalars().all()
 
-    async def get_by_document_and_index(
+    async def get_by_document_and_sequence(
         self,
         document_id: UUID,
-        chunk_index: int,
+        sequence_number: int,
     ) -> ChunkModel | None:
-        """Get a specific chunk by document and index."""
+        """Get a specific chunk by document and sequence number."""
         stmt = select(self.model_class).where(
             self.model_class.document_id == document_id,
             self.model_class.tenant_id == self.tenant_id,
-            self.model_class.chunk_index == chunk_index,
+            self.model_class.sequence_number == sequence_number,
         )
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
