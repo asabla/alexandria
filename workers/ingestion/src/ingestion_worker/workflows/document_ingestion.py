@@ -403,6 +403,8 @@ class UpdateDocumentStatusInput:
     tenant_id: str
     status: str
     error_message: str | None = None
+    document_type: str | None = None
+    mime_type: str | None = None
     page_count: int | None = None
     word_count: int | None = None
     language: str | None = None
@@ -684,6 +686,8 @@ class DocumentIngestionWorkflow:
                     document_id=input.document_id,
                     tenant_id=input.tenant_id,
                     status="completed",
+                    document_type=classification.document_type,
+                    mime_type=classification.mime_type,
                     page_count=parsed.page_count,
                     word_count=parsed.word_count,
                     language=parsed.language,

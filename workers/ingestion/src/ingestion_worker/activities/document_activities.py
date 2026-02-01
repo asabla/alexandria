@@ -5,8 +5,14 @@ Activities for document classification, parsing, chunking, and status updates.
 """
 
 import hashlib
+import os
+
 from temporalio import activity
 
+from ingestion_worker.activities.classification import (
+    classify_document as classify_document_impl,
+    ClassificationResult,
+)
 from ingestion_worker.workflows.document_ingestion import (
     ClassifyDocumentInput,
     ClassifyDocumentOutput,
@@ -18,77 +24,98 @@ from ingestion_worker.workflows.document_ingestion import (
     UpdateDocumentStatusInput,
 )
 
+# Number of bytes to read for magic number detection
+MAGIC_BYTES_SIZE = 8192
+
+
+def _get_minio_client():
+    """Get MinIO client from environment configuration."""
+    from alexandria_db.clients.minio import MinIOClient
+
+    return MinIOClient(
+        endpoint=os.getenv("MINIO_ENDPOINT", "localhost:9000"),
+        access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
+    )
+
 
 @activity.defn
 async def classify_document(input: ClassifyDocumentInput) -> ClassifyDocumentOutput:
     """
-    Classify the document type based on file extension, mime type, and magic bytes.
+    Classify the document type based on magic bytes, file extension, and MIME type.
+
+    This activity uses a multi-layered detection approach:
+    1. Magic bytes (file signature) - most reliable
+    2. File extension - common and quick
+    3. MIME type hint - if provided
+    4. Content analysis - for text files
+
+    For optimal detection, it reads the first bytes of the file from storage
+    to examine the magic bytes/file signature.
 
     Args:
         input: Classification input with storage location and hints
 
     Returns:
-        Document classification with type and confidence
+        Document classification with type, MIME type, and confidence score
     """
-    activity.logger.info(f"Classifying document: {input.storage_key}")
+    activity.logger.info(
+        "Classifying document",
+        extra={
+            "storage_key": input.storage_key,
+            "storage_bucket": input.storage_bucket,
+            "source_filename": input.source_filename,
+            "provided_mime_type": input.mime_type,
+        },
+    )
 
-    # Determine document type from mime type or filename
-    document_type = "unknown"
-    mime_type = input.mime_type or "application/octet-stream"
+    file_data: bytes | None = None
 
-    # Check filename extension
-    if input.source_filename:
-        ext = input.source_filename.lower().split(".")[-1] if "." in input.source_filename else ""
-        extension_map = {
-            "pdf": ("pdf", "application/pdf"),
-            "docx": (
-                "docx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ),
-            "doc": ("doc", "application/msword"),
-            "txt": ("txt", "text/plain"),
-            "md": ("markdown", "text/markdown"),
-            "html": ("html", "text/html"),
-            "htm": ("html", "text/html"),
-            "jpg": ("image", "image/jpeg"),
-            "jpeg": ("image", "image/jpeg"),
-            "png": ("image", "image/png"),
-            "gif": ("image", "image/gif"),
-            "mp3": ("audio", "audio/mpeg"),
-            "wav": ("audio", "audio/wav"),
-            "mp4": ("video", "video/mp4"),
-            "xlsx": (
-                "spreadsheet",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ),
-            "csv": ("spreadsheet", "text/csv"),
-            "eml": ("email", "message/rfc822"),
-        }
-        if ext in extension_map:
-            document_type, mime_type = extension_map[ext]
+    # Try to read magic bytes from storage if we have a storage key
+    if input.storage_key and input.storage_bucket:
+        try:
+            minio_client = _get_minio_client()
 
-    # Check mime type if extension didn't match
-    if document_type == "unknown" and input.mime_type:
-        mime_map = {
-            "application/pdf": "pdf",
-            "text/plain": "txt",
-            "text/html": "html",
-            "text/markdown": "markdown",
-            "image/": "image",
-            "audio/": "audio",
-            "video/": "video",
-        }
-        for mime_prefix, doc_type in mime_map.items():
-            if input.mime_type.startswith(mime_prefix):
-                document_type = doc_type
-                break
+            # Read first bytes for magic number detection
+            async with minio_client.stream_object(
+                input.storage_bucket, input.storage_key
+            ) as stream:
+                file_data = stream.read(MAGIC_BYTES_SIZE)
 
-    activity.logger.info(f"Document classified as: {document_type} ({mime_type})")
+            activity.logger.debug(
+                "Read magic bytes from storage",
+                extra={"bytes_read": len(file_data) if file_data else 0},
+            )
+        except Exception as e:
+            # Log but continue - we can still classify by extension/mime type
+            activity.logger.warning(
+                "Could not read file from storage for magic bytes detection",
+                extra={"error": str(e), "storage_key": input.storage_key},
+            )
+
+    # Perform classification using multi-method detection
+    result: ClassificationResult = classify_document_impl(
+        data=file_data,
+        filename=input.source_filename,
+        mime_type=input.mime_type,
+    )
+
+    activity.logger.info(
+        "Document classified",
+        extra={
+            "document_type": result.document_type,
+            "mime_type": result.mime_type,
+            "confidence": result.confidence,
+            "detection_method": result.detection_method,
+            "description": result.description,
+        },
+    )
 
     return ClassifyDocumentOutput(
-        document_type=document_type,
-        mime_type=mime_type,
-        confidence=1.0 if document_type != "unknown" else 0.5,
+        document_type=result.document_type.value,
+        mime_type=result.mime_type,
+        confidence=result.confidence,
     )
 
 
@@ -230,15 +257,48 @@ async def update_document_status(input: UpdateDocumentStatusInput) -> None:
     """
     Update document status in the database.
 
+    This activity updates the document record with:
+    - Processing status (pending, processing, completed, failed)
+    - Document type and MIME type (from classification)
+    - Page count, word count, language (from parsing)
+    - Indexing status flags (vector, fulltext, graph)
+    - Error message (if failed)
+
     Args:
-        input: Status update input with document ID and new status
+        input: Status update input with document ID, status, and metadata
     """
-    activity.logger.info(f"Updating document {input.document_id} status to {input.status}")
+    activity.logger.info(
+        "Updating document status",
+        extra={
+            "document_id": input.document_id,
+            "tenant_id": input.tenant_id,
+            "status": input.status,
+            "document_type": input.document_type,
+            "mime_type": input.mime_type,
+            "page_count": input.page_count,
+            "word_count": input.word_count,
+            "language": input.language,
+            "is_indexed_vector": input.is_indexed_vector,
+            "is_indexed_fulltext": input.is_indexed_fulltext,
+            "is_indexed_graph": input.is_indexed_graph,
+            "error_message": input.error_message,
+        },
+    )
 
     # TODO: Implement actual database update
     # In real implementation:
-    # 1. Get database session
-    # 2. Update document record with new status and metadata
+    # 1. Get database session from activity context or create new connection
+    # 2. Update document record with all provided fields:
+    #    - status
+    #    - document_type (if provided)
+    #    - mime_type (if provided)
+    #    - page_count, word_count, language
+    #    - is_indexed_vector, is_indexed_fulltext, is_indexed_graph
+    #    - error_message (if status == "failed")
+    #    - processing_completed_at = now() if status in ("completed", "failed")
     # 3. Update ingestion job record if exists
 
-    activity.logger.info(f"Document {input.document_id} status updated to {input.status}")
+    activity.logger.info(
+        "Document status updated",
+        extra={"document_id": input.document_id, "status": input.status},
+    )
