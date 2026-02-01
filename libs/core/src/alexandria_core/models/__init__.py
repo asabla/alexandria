@@ -1,7 +1,6 @@
-"""Alexandria Core - Shared domain models, schemas, and utilities."""
+"""Domain models for Alexandria."""
 
-from alexandria_core.models import (
-    # Base
+from alexandria_core.models.base import (
     AuditMixin,
     BaseModel,
     IdentifiableMixin,
@@ -9,26 +8,22 @@ from alexandria_core.models import (
     SoftDeleteMixin,
     TenantScopedMixin,
     TimestampMixin,
-    # Tenant
-    Project,
-    ProjectDocument,
-    ProjectEntity,
-    Tenant,
-    # Document
+)
+from alexandria_core.models.document import (
     Chunk,
     Document,
     DocumentStatus,
     DocumentType,
     IngestionJob,
-    # Entity
+)
+from alexandria_core.models.entity import (
     Entity,
     EntityMention,
     EntityType,
     Relationship,
     RelationshipType,
 )
-
-__version__ = "0.1.0"
+from alexandria_core.models.tenant import Project, ProjectDocument, ProjectEntity, Tenant
 
 __all__ = [
     # Base
