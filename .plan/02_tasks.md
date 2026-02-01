@@ -47,7 +47,7 @@
 | P0-E1-S2-T2 | Set up ruff configuration (linting + formatting) | S | Done | T1 |
 | P0-E1-S2-T3 | Configure mypy with strict mode | S | Done | T1 |
 | P0-E1-S2-T4 | Configure pytest and coverage settings | S | Done | T1 |
-| P0-E1-S2-T5 | Install pre-commit and set up hooks | S | Pending | P0-E1-S1-T2 |
+| P0-E1-S2-T5 | Install pre-commit and set up hooks | S | Done | P0-E1-S1-T2 |
 | P0-E1-S2-T6 | Create VS Code workspace settings | S | Done | T2, T3 |
 | P0-E1-S2-T7 | Generate initial uv.lock file | S | Done | T1 |
 
@@ -1466,17 +1466,20 @@
 ## Notes
 
 ### Effort Estimates
+
 - **S (Small)**: < 2 hours
 - **M (Medium)**: 2-8 hours  
 - **L (Large)**: > 8 hours
 
 ### Status Legend
+
 - **Pending**: Not started
 - **In Progress**: Currently being worked on
 - **Done**: Completed
 - **Blocked**: Waiting on dependencies or external factors
 
 ### Dependency Notation
+
 - `T1, T2` = Tasks T1 and T2 from the same story
 - `P0-E1-S1` = Another story in the same phase
 - `P0-E1-S1-T3` = Specific task from another story
