@@ -12,12 +12,12 @@
 
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
-| Phase 0 | 89 | 13 | 0 | 0 |
+| Phase 0 | 89 | 34 | 0 | 0 |
 | Phase 1 | 92 | 0 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 13 | 0 | 0 |
+| **Total** | **393** | 34 | 0 | 0 |
 
 ---
 
@@ -48,7 +48,7 @@
 | P0-E1-S2-T3 | Configure mypy with strict mode | S | Done | T1 |
 | P0-E1-S2-T4 | Configure pytest and coverage settings | S | Done | T1 |
 | P0-E1-S2-T5 | Install pre-commit and set up hooks | S | Pending | P0-E1-S1-T2 |
-| P0-E1-S2-T6 | Create VS Code workspace settings | S | Pending | T2, T3 |
+| P0-E1-S2-T6 | Create VS Code workspace settings | S | Done | T2, T3 |
 | P0-E1-S2-T7 | Generate initial uv.lock file | S | Pending | T1 |
 
 ---
@@ -57,13 +57,13 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E1-S3-T1 | Create base Python Dockerfile (python:3.12-slim) | M | Pending | P0-E1-S2-T1 |
-| P0-E1-S3-T2 | Create API Dockerfile with FastAPI/uvicorn | M | Pending | T1 |
-| P0-E1-S3-T3 | Create Worker Dockerfile with Temporal SDK | M | Pending | T1 |
-| P0-E1-S3-T4 | Implement multi-stage builds for production | M | Pending | T2, T3 |
-| P0-E1-S3-T5 | Add non-root user configuration | S | Pending | T4 |
-| P0-E1-S3-T6 | Add health check commands | S | Pending | T4 |
-| P0-E1-S3-T7 | Create .dockerignore files | S | Pending | T1 |
+| P0-E1-S3-T1 | Create base Python Dockerfile (python:3.12-slim) | M | Done | P0-E1-S2-T1 |
+| P0-E1-S3-T2 | Create API Dockerfile with FastAPI/uvicorn | M | Done | T1 |
+| P0-E1-S3-T3 | Create Worker Dockerfile with Temporal SDK | M | Done | T1 |
+| P0-E1-S3-T4 | Implement multi-stage builds for production | M | Done | T2, T3 |
+| P0-E1-S3-T5 | Add non-root user configuration | S | Done | T4 |
+| P0-E1-S3-T6 | Add health check commands | S | Done | T4 |
+| P0-E1-S3-T7 | Create .dockerignore files | S | Done | T1 |
 
 ---
 
@@ -100,12 +100,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S1-T1 | Add PostgreSQL 16 service to docker-compose | S | Pending | P0-E1-S3 |
-| P0-E2-S1-T2 | Configure volume mount for data persistence | S | Pending | T1 |
+| P0-E2-S1-T1 | Add PostgreSQL 16 service to docker-compose | S | Done | P0-E1-S3 |
+| P0-E2-S1-T2 | Configure volume mount for data persistence | S | Done | T1 |
 | P0-E2-S1-T3 | Set up Alembic configuration | M | Pending | P0-E1-S2-T1 |
 | P0-E2-S1-T4 | Create initial migrations (documents, ingestion_jobs) | M | Pending | T3 |
 | P0-E2-S1-T5 | Configure connection pooling (asyncpg) | S | Pending | T1 |
-| P0-E2-S1-T6 | Add health check endpoint | S | Pending | T1 |
+| P0-E2-S1-T6 | Add health check endpoint | S | Done | T1 |
 
 ---
 
@@ -113,10 +113,10 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S2-T1 | Add MinIO service to docker-compose | S | Pending | P0-E1-S3 |
-| P0-E2-S2-T2 | Configure buckets via init script | M | Pending | T1 |
+| P0-E2-S2-T1 | Add MinIO service to docker-compose | S | Done | P0-E1-S3 |
+| P0-E2-S2-T2 | Configure buckets via init script | M | Done | T1 |
 | P0-E2-S2-T3 | Set up IAM policies for service accounts | M | Pending | T2 |
-| P0-E2-S2-T4 | Configure console access (port 9001) | S | Pending | T1 |
+| P0-E2-S2-T4 | Configure console access (port 9001) | S | Done | T1 |
 | P0-E2-S2-T5 | Create pre-signed URL utility functions | M | Pending | T3 |
 | P0-E2-S2-T6 | Write MinIO client wrapper class | M | Pending | T5 |
 
@@ -126,7 +126,7 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S3-T1 | Add Qdrant service to docker-compose | S | Pending | P0-E1-S3 |
+| P0-E2-S3-T1 | Add Qdrant service to docker-compose | S | Done | P0-E1-S3 |
 | P0-E2-S3-T2 | Configure collection initialization script | M | Pending | T1 |
 | P0-E2-S3-T3 | Set up payload indexes (document_id, tenant_id) | M | Pending | T2 |
 | P0-E2-S3-T4 | Configure quantization (INT8 scalar) | S | Pending | T2 |
@@ -139,12 +139,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S4-T1 | Add Neo4j 5.x service to docker-compose | S | Pending | P0-E1-S3 |
-| P0-E2-S4-T2 | Configure APOC plugin installation | M | Pending | T1 |
-| P0-E2-S4-T3 | Create constraints initialization script | M | Pending | T2 |
-| P0-E2-S4-T4 | Create indexes (Entity.name, Entity.type, Document.id) | S | Pending | T3 |
+| P0-E2-S4-T1 | Add Neo4j 5.x service to docker-compose | S | Done | P0-E1-S3 |
+| P0-E2-S4-T2 | Configure APOC plugin installation | M | Done | T1 |
+| P0-E2-S4-T3 | Create constraints initialization script | M | Done | T2 |
+| P0-E2-S4-T4 | Create indexes (Entity.name, Entity.type, Document.id) | S | Done | T3 |
 | P0-E2-S4-T5 | Create Neo4j client wrapper class | M | Pending | T1 |
-| P0-E2-S4-T6 | Configure browser access (port 7474, 7687) | S | Pending | T1 |
+| P0-E2-S4-T6 | Configure browser access (port 7474, 7687) | S | Done | T1 |
 
 ---
 
@@ -152,12 +152,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S5-T1 | Add MeiliSearch service to docker-compose | S | Pending | P0-E1-S3 |
+| P0-E2-S5-T1 | Add MeiliSearch service to docker-compose | S | Done | P0-E1-S3 |
 | P0-E2-S5-T2 | Create index initialization script | M | Pending | T1 |
 | P0-E2-S5-T3 | Configure searchable/filterable attributes | S | Pending | T2 |
 | P0-E2-S5-T4 | Configure facets (document_type, source, date_range) | S | Pending | T2 |
 | P0-E2-S5-T5 | Create MeiliSearch client wrapper class | M | Pending | T1 |
-| P0-E2-S5-T6 | Disable analytics for privacy | S | Pending | T1 |
+| P0-E2-S5-T6 | Disable analytics for privacy | S | Done | T1 |
 
 ---
 
@@ -165,10 +165,10 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P0-E2-S6-T1 | Add Temporal server service to docker-compose | M | Pending | P0-E2-S1 |
+| P0-E2-S6-T1 | Add Temporal server service to docker-compose | M | Done | P0-E2-S1 |
 | P0-E2-S6-T2 | Add temporal-admin-tools service | S | Pending | T1 |
-| P0-E2-S6-T3 | Add temporal-ui service | S | Pending | T1 |
-| P0-E2-S6-T4 | Configure PostgreSQL backend for Temporal | M | Pending | T1, P0-E2-S1 |
+| P0-E2-S6-T3 | Add temporal-ui service | S | Done | T1 |
+| P0-E2-S6-T4 | Configure PostgreSQL backend for Temporal | M | Done | T1, P0-E2-S1 |
 | P0-E2-S6-T5 | Create namespace initialization script | M | Pending | T1-T3 |
 | P0-E2-S6-T6 | Create Temporal client wrapper class | M | Pending | T1 |
 

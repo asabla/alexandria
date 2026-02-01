@@ -1,0 +1,83 @@
+# =============================================================================
+# Alexandria Worker Dockerfile
+# Multi-stage build for Temporal workers
+# =============================================================================
+# Build args to select which worker to build
+ARG WORKER_TYPE=ingestion
+
+# -----------------------------------------------------------------------------
+# Stage 1: Builder
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ARG WORKER_TYPE
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Set up working directory
+WORKDIR /app
+
+# Copy dependency files first (for caching)
+COPY pyproject.toml ./
+COPY workers/${WORKER_TYPE}/pyproject.toml ./workers/${WORKER_TYPE}/
+COPY libs/core/pyproject.toml ./libs/core/
+COPY libs/db/pyproject.toml ./libs/db/
+
+# Copy source code
+COPY workers/${WORKER_TYPE}/src ./workers/${WORKER_TYPE}/src
+COPY libs/core/src ./libs/core/src
+COPY libs/db/src ./libs/db/src
+
+# Install dependencies based on worker type
+RUN uv sync --frozen --no-dev --package ${WORKER_TYPE}-worker
+
+# -----------------------------------------------------------------------------
+# Stage 2: Runtime
+# -----------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
+
+ARG WORKER_TYPE
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Create non-root user
+RUN groupadd --gid 1000 alexandria \
+    && useradd --uid 1000 --gid alexandria --shell /bin/bash --create-home alexandria
+
+# Set up working directory
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
+
+# Copy application code
+COPY --from=builder /app/workers/${WORKER_TYPE}/src /app/workers/${WORKER_TYPE}/src
+COPY --from=builder /app/libs /app/libs
+
+# Set environment variables
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONPATH="/app/workers/${WORKER_TYPE}/src:/app/libs/core/src:/app/libs/db/src"
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV WORKER_TYPE=${WORKER_TYPE}
+
+# Switch to non-root user
+USER alexandria
+
+# Health check - workers report health via Temporal
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Run the worker
+CMD ["python", "-m", "${WORKER_TYPE}_worker.main"]

@@ -1,0 +1,62 @@
+# =============================================================================
+# Docker ignore file for Alexandria
+# =============================================================================
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+*.egg-info
+dist
+build
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation
+docs
+*.md
+!README.md
+
+# Tests (exclude from production builds)
+**/tests
+pytest.ini
+conftest.py
+
+# Local development
+.env
+.env.*
+!.env.example
+docker-compose*.yml
+Tiltfile
+.tilt-dev
+
+# Data
+data
+*.db
+*.sqlite
+
+# Plan files
+.plan
+
+# Misc
+*.log
+*.tmp
+.DS_Store

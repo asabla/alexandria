@@ -1,0 +1,12 @@
+# Grafana dashboards provisioning
+apiVersion: 1
+
+providers:
+  - name: 'Alexandria'
+    orgId: 1
+    folder: 'Alexandria'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
