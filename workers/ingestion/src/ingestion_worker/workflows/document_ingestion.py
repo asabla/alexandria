@@ -342,12 +342,39 @@ class GenerateEmbeddingsInput:
 
 
 @dataclass
+class SparseVector:
+    """Sparse vector for hybrid search (BM25-style).
+
+    Attributes:
+        indices: Token indices in the vocabulary
+        values: Token weights
+    """
+
+    indices: list[int] = field(default_factory=list)
+    values: list[float] = field(default_factory=list)
+
+
+@dataclass
 class EmbeddingInfo:
-    """Embedding information for a chunk."""
+    """Embedding information for a chunk.
+
+    Stores both dense and sparse vectors for hybrid search.
+
+    Attributes:
+        chunk_sequence: Sequence number of the chunk
+        embedding_id: Unique identifier for this embedding
+        model: Model used to generate the embedding
+        dense_vector: Dense embedding vector
+        sparse_vector: Sparse vector for hybrid search (optional)
+        dimensions: Number of dimensions in dense vector
+    """
 
     chunk_sequence: int
     embedding_id: str
     model: str
+    dense_vector: list[float] = field(default_factory=list)
+    sparse_vector: SparseVector | None = None
+    dimensions: int = 0
 
 
 @dataclass

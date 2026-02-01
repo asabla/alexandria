@@ -20,8 +20,17 @@ from ingestion_worker.activities.chunking import (
     ChunkType,
     chunk_text,
 )
+from ingestion_worker.activities.embeddings import (
+    EmbeddingConfig,
+    EmbeddingClient,
+    EmbeddingModel,
+    EmbeddingResult,
+    BatchEmbeddingResult,
+    BM25Tokenizer,
+)
 from ingestion_worker.activities.embedding_activities import (
     generate_embeddings,
+    generate_embeddings_mock,
 )
 from ingestion_worker.activities.indexing_activities import (
     index_vector,
@@ -51,8 +60,15 @@ __all__ = [
     "SemanticChunker",
     "ChunkType",
     "chunk_text",
-    # Embedding activities
+    # Embedding generation
+    "EmbeddingConfig",
+    "EmbeddingClient",
+    "EmbeddingModel",
+    "EmbeddingResult",
+    "BatchEmbeddingResult",
+    "BM25Tokenizer",
     "generate_embeddings",
+    "generate_embeddings_mock",
     # Indexing activities
     "index_vector",
     "index_fulltext",

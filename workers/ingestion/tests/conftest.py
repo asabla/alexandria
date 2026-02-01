@@ -114,8 +114,22 @@ def get_default_mock_results() -> MockActivityResults:
         },
         embeddings={
             "embeddings": [
-                {"chunk_sequence": 0, "embedding_id": "emb-1", "model": "bge-base"},
-                {"chunk_sequence": 1, "embedding_id": "emb-2", "model": "bge-base"},
+                {
+                    "chunk_sequence": 0,
+                    "embedding_id": "emb-1",
+                    "model": "bge-base",
+                    "dense_vector": [0.1] * 768,
+                    "sparse_vector": {"indices": [1, 2, 3], "values": [0.5, 0.3, 0.2]},
+                    "dimensions": 768,
+                },
+                {
+                    "chunk_sequence": 1,
+                    "embedding_id": "emb-2",
+                    "model": "bge-base",
+                    "dense_vector": [0.2] * 768,
+                    "sparse_vector": {"indices": [4, 5, 6], "values": [0.4, 0.4, 0.2]},
+                    "dimensions": 768,
+                },
             ],
             "model": "bge-base",
         },

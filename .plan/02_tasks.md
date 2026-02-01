@@ -13,11 +13,11 @@
 | Phase | Total | Done | In Progress | Blocked |
 |-------|-------|------|-------------|---------|
 | Phase 0 | 89 | 48 | 0 | 0 |
-| Phase 1 | 92 | 51 | 0 | 0 |
+| Phase 1 | 92 | 57 | 0 | 0 |
 | Phase 2 | 88 | 0 | 0 | 0 |
 | Phase 3 | 68 | 0 | 0 | 0 |
 | Phase 4 | 56 | 0 | 0 | 0 |
-| **Total** | **393** | 99 | 0 | 0 |
+| **Total** | **393** | 105 | 0 | 0 |
 
 ---
 
@@ -541,12 +541,12 @@
 
 | ID | Task | Effort | Status | Dependencies |
 |----|------|--------|--------|--------------|
-| P1-E4-S2-T1 | Implement generate_embeddings activity | M | Pending | P0-E3-S2, P1-E4-S1 |
-| P1-E4-S2-T2 | Implement batch processing | M | Pending | T1 |
-| P1-E4-S2-T3 | Generate dense embeddings (BGE) | M | Pending | T1 |
-| P1-E4-S2-T4 | Generate sparse vectors (BM25 tokens) | M | Pending | T1 |
-| P1-E4-S2-T5 | Implement retry logic | S | Pending | T1 |
-| P1-E4-S2-T6 | Write activity unit tests | M | Pending | T1-T5 |
+| P1-E4-S2-T1 | Implement generate_embeddings activity | M | Done | P0-E3-S2, P1-E4-S1 |
+| P1-E4-S2-T2 | Implement batch processing | M | Done | T1 |
+| P1-E4-S2-T3 | Generate dense embeddings (BGE) | M | Done | T1 |
+| P1-E4-S2-T4 | Generate sparse vectors (BM25 tokens) | M | Done | T1 |
+| P1-E4-S2-T5 | Implement retry logic | S | Done | T1 |
+| P1-E4-S2-T6 | Write activity unit tests | M | Done | T1-T5 |
 
 ---
 
