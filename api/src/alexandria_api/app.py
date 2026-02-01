@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from alexandria_api.config import Settings, get_settings
-from alexandria_api.routes import health
+from alexandria_api.routes import health, tenants
 
 
 @asynccontextmanager
@@ -52,5 +52,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # Register routes
     app.include_router(health.router, tags=["Health"])
+    app.include_router(tenants.router)
 
     return app

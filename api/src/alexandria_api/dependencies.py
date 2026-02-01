@@ -1,10 +1,9 @@
 """FastAPI dependencies for database and service clients."""
 
-from functools import lru_cache
 from typing import Annotated, AsyncGenerator
 
 from fastapi import Depends
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine, async_sessionmaker
 
 from alexandria_api.config import Settings, get_settings
 from alexandria_db import (
@@ -21,18 +20,22 @@ from alexandria_db import (
 # Database Session
 # ============================================================
 
+# Cache for engine and sessionmaker - keyed by database URL
+_engine_cache: dict[str, AsyncEngine] = {}
+_sessionmaker_cache: dict[str, async_sessionmaker[AsyncSession]] = {}
 
-@lru_cache
-def get_sessionmaker(
-    settings: Settings = Depends(get_settings),
-) -> async_sessionmaker[AsyncSession]:
-    """Get a cached async sessionmaker."""
-    engine = get_async_engine(settings.database_url, echo=settings.debug)
-    return get_async_sessionmaker(engine)
+
+def _get_cached_sessionmaker(database_url: str, echo: bool) -> async_sessionmaker[AsyncSession]:
+    """Get or create a cached sessionmaker for the given database URL."""
+    if database_url not in _sessionmaker_cache:
+        if database_url not in _engine_cache:
+            _engine_cache[database_url] = get_async_engine(database_url, echo=echo)
+        _sessionmaker_cache[database_url] = get_async_sessionmaker(_engine_cache[database_url])
+    return _sessionmaker_cache[database_url]
 
 
 async def get_db_session(
-    sessionmaker: async_sessionmaker[AsyncSession] = Depends(get_sessionmaker),
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AsyncGenerator[AsyncSession, None]:
     """
     Dependency that provides a database session.
@@ -45,6 +48,7 @@ async def get_db_session(
             result = await db.execute(select(Item))
             return result.scalars().all()
     """
+    sessionmaker = _get_cached_sessionmaker(settings.database_url, settings.debug)
     session = sessionmaker()
     try:
         yield session
@@ -64,44 +68,66 @@ DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 # Service Clients
 # ============================================================
 
+# Cache for service clients
+_minio_client: MinIOClient | None = None
+_qdrant_client: QdrantClient | None = None
+_neo4j_client: Neo4jClient | None = None
+_meilisearch_client: MeiliSearchClient | None = None
 
-@lru_cache
-def get_minio_client(settings: Settings = Depends(get_settings)) -> MinIOClient:
+
+def get_minio_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MinIOClient:
     """Get a cached MinIO client."""
-    return MinIOClient(
-        endpoint=settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=settings.minio_secure,
-    )
+    global _minio_client
+    if _minio_client is None:
+        _minio_client = MinIOClient(
+            endpoint=settings.minio_endpoint,
+            access_key=settings.minio_access_key,
+            secret_key=settings.minio_secret_key,
+            secure=settings.minio_secure,
+        )
+    return _minio_client
 
 
-@lru_cache
-def get_qdrant_client(settings: Settings = Depends(get_settings)) -> QdrantClient:
+def get_qdrant_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> QdrantClient:
     """Get a cached Qdrant client."""
-    return QdrantClient(
-        url=settings.qdrant_url,
-        collection=settings.qdrant_collection,
-    )
+    global _qdrant_client
+    if _qdrant_client is None:
+        _qdrant_client = QdrantClient(
+            url=settings.qdrant_url,
+            collection=settings.qdrant_collection,
+        )
+    return _qdrant_client
 
 
-@lru_cache
-def get_neo4j_client(settings: Settings = Depends(get_settings)) -> Neo4jClient:
+def get_neo4j_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Neo4jClient:
     """Get a cached Neo4j client."""
-    return Neo4jClient(
-        uri=settings.neo4j_uri,
-        user=settings.neo4j_user,
-        password=settings.neo4j_password,
-    )
+    global _neo4j_client
+    if _neo4j_client is None:
+        _neo4j_client = Neo4jClient(
+            uri=settings.neo4j_uri,
+            user=settings.neo4j_user,
+            password=settings.neo4j_password,
+        )
+    return _neo4j_client
 
 
-@lru_cache
-def get_meilisearch_client(settings: Settings = Depends(get_settings)) -> MeiliSearchClient:
+def get_meilisearch_client(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> MeiliSearchClient:
     """Get a cached MeiliSearch client."""
-    return MeiliSearchClient(
-        url=settings.meilisearch_url,
-        api_key=settings.meilisearch_api_key,
-    )
+    global _meilisearch_client
+    if _meilisearch_client is None:
+        _meilisearch_client = MeiliSearchClient(
+            url=settings.meilisearch_url,
+            api_key=settings.meilisearch_api_key,
+        )
+    return _meilisearch_client
 
 
 # Type aliases for dependency injection
@@ -109,6 +135,22 @@ MinIO = Annotated[MinIOClient, Depends(get_minio_client)]
 Qdrant = Annotated[QdrantClient, Depends(get_qdrant_client)]
 Neo4j = Annotated[Neo4jClient, Depends(get_neo4j_client)]
 MeiliSearch = Annotated[MeiliSearchClient, Depends(get_meilisearch_client)]
+
+
+# ============================================================
+# Request Context (re-export from middleware)
+# ============================================================
+
+# Import context types for convenient access
+# These are the primary dependencies for tenant/project scoping
+from alexandria_api.middleware.context import (  # noqa: E402
+    TenantContext,
+    RequestContext,
+    get_tenant_context,
+    get_request_context,
+    Tenant,
+    Context,
+)
 
 
 # ============================================================
