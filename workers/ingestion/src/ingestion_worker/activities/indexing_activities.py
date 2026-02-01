@@ -270,43 +270,233 @@ async def index_vector_mock(input: IndexVectorInput) -> IndexVectorOutput:
     )
 
 
+def _generate_meili_doc_id(document_id: str, chunk_sequence: int) -> str:
+    """Generate a deterministic MeiliSearch document ID.
+
+    Creates a unique document ID by combining the document ID and chunk
+    sequence number. This ensures the same chunk always gets the same
+    document ID, allowing re-indexing without creating duplicates.
+
+    Args:
+        document_id: The document's unique identifier
+        chunk_sequence: The chunk's sequence number within the document
+
+    Returns:
+        A deterministic document ID string
+    """
+    return f"{document_id}_chunk_{chunk_sequence}"
+
+
+def _build_meili_document(
+    chunk: ChunkInfo,
+    document_id: str,
+    tenant_id: str,
+    project_id: str | None,
+    title: str,
+    document_type: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a MeiliSearch document from a chunk.
+
+    Creates a document dictionary suitable for indexing in MeiliSearch,
+    including all searchable and filterable fields.
+
+    Args:
+        chunk: The chunk information
+        document_id: The parent document's unique identifier
+        tenant_id: Tenant ID for multi-tenancy filtering
+        project_id: Optional project association
+        title: Document title (indexed with each chunk for context)
+        document_type: Type of document (pdf, docx, etc.)
+        metadata: Additional metadata dictionary
+
+    Returns:
+        Document dictionary ready for MeiliSearch indexing
+    """
+    doc: dict[str, Any] = {
+        # Primary key (required)
+        "id": _generate_meili_doc_id(document_id, chunk.sequence_number),
+        # Searchable fields
+        "title": title,
+        "content": chunk.content,
+        # Filterable fields (for multi-tenancy and faceted search)
+        "tenant_id": tenant_id,
+        "document_type": document_type,
+        "document_id": document_id,  # For filtering/grouping chunks by document
+        "chunk_sequence": chunk.sequence_number,
+        "chunk_type": chunk.chunk_type,
+    }
+
+    # Add optional project_id as list (for multi-project support)
+    if project_id:
+        doc["project_ids"] = [project_id]
+    else:
+        doc["project_ids"] = []
+
+    # Add heading context as searchable string
+    if chunk.heading_context:
+        doc["heading_context"] = " > ".join(chunk.heading_context)
+
+    # Add optional metadata fields
+    if metadata.get("language"):
+        doc["language"] = metadata["language"]
+
+    if metadata.get("created_at"):
+        doc["created_at"] = metadata["created_at"]
+
+    if metadata.get("updated_at"):
+        doc["updated_at"] = metadata["updated_at"]
+
+    if metadata.get("description"):
+        doc["description"] = metadata["description"]
+
+    if metadata.get("summary"):
+        doc["summary"] = metadata["summary"]
+
+    if metadata.get("entities"):
+        doc["entities"] = metadata["entities"]
+
+    if metadata.get("entity_types"):
+        doc["entity_types"] = metadata["entity_types"]
+
+    if metadata.get("status"):
+        doc["status"] = metadata["status"]
+
+    return doc
+
+
 @activity.defn
 async def index_fulltext(input: IndexFulltextInput) -> IndexFulltextOutput:
     """
-    Index document in fulltext search (MeiliSearch).
+    Index document chunks in MeiliSearch for full-text search.
 
-    Stores document content and metadata for keyword search with
-    faceted filtering.
+    Indexes each chunk as a separate MeiliSearch document (~1KB each)
+    following MeiliSearch best practices for optimal search performance.
+
+    Features:
+    - Chunk-level indexing for fine-grained search results
+    - Batch processing with heartbeat support for long-running indexing
+    - Automatic upsert (re-indexing updates existing documents)
+    - Multi-tenant filtering support via tenant_id
+    - Faceted search on document_type, language, entity_types
 
     Args:
-        input: Fulltext indexing input with document content
+        input: Fulltext indexing input with document chunks
 
     Returns:
-        Indexing result with success status
+        Indexing result with success status and count
     """
-    activity.logger.info(f"Indexing document {input.document_id} in MeiliSearch")
+    # Lazy import to avoid Temporal sandbox issues
+    from alexandria_db.clients import MeiliSearchClient
 
-    index_name = "documents"  # Default index
+    activity.logger.info(
+        f"Indexing {len(input.chunks)} chunks in MeiliSearch",
+        extra={
+            "document_id": input.document_id,
+            "tenant_id": input.tenant_id,
+            "chunk_count": len(input.chunks),
+        },
+    )
 
-    # TODO: Implement actual MeiliSearch indexing
-    # In real implementation:
-    # 1. Get MeiliSearch client
-    # 2. Create document object with searchable fields
-    # 3. Add document to index
-    # 4. Wait for task completion
+    # Get configuration from environment
+    meilisearch_url = os.getenv("MEILISEARCH_URL", "http://localhost:7700")
+    meilisearch_api_key = os.getenv("MEILISEARCH_API_KEY", "masterKey")
+    index_name = os.getenv("MEILISEARCH_INDEX", "documents")
+    batch_size = int(os.getenv("MEILISEARCH_BATCH_SIZE", "100"))
 
-    # Document should include:
-    # - id (document_id)
-    # - tenant_id (for filtering)
-    # - project_id (for filtering)
-    # - title
-    # - content (truncated if very long)
-    # - document_type (for facets)
-    # - metadata fields
+    # Create client
+    client = MeiliSearchClient(
+        url=meilisearch_url,
+        api_key=meilisearch_api_key,
+        index=index_name,
+    )
 
-    activity.logger.info(f"Indexed document in {index_name}")
+    try:
+        # Ensure index exists with proper configuration
+        created = await client.ensure_index(index=index_name)
+        if created:
+            activity.logger.info(
+                f"Created MeiliSearch index: {index_name}",
+                extra={"index_name": index_name},
+            )
+
+        # Build documents from chunks
+        documents = [
+            _build_meili_document(
+                chunk=chunk,
+                document_id=input.document_id,
+                tenant_id=input.tenant_id,
+                project_id=input.project_id,
+                title=input.title,
+                document_type=input.document_type,
+                metadata=input.metadata,
+            )
+            for chunk in input.chunks
+        ]
+
+        # Index in batches with heartbeat
+        indexed_count = 0
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i : i + batch_size]
+            count = await client.index_documents(batch, index=index_name, wait=True)
+            indexed_count += count
+
+            # Heartbeat after each batch
+            activity.heartbeat(f"Indexed {indexed_count}/{len(documents)} chunks")
+
+        activity.logger.info(
+            f"Indexed {indexed_count} chunks in {index_name}",
+            extra={
+                "document_id": input.document_id,
+                "indexed_count": indexed_count,
+                "index_name": index_name,
+            },
+        )
+
+        return IndexFulltextOutput(
+            indexed=True,
+            indexed_count=indexed_count,
+            index_name=index_name,
+        )
+
+    except Exception as e:
+        activity.logger.error(
+            f"Fulltext indexing failed: {e}",
+            extra={
+                "document_id": input.document_id,
+                "error": str(e),
+            },
+        )
+        raise
+
+
+@activity.defn
+async def index_fulltext_mock(input: IndexFulltextInput) -> IndexFulltextOutput:
+    """
+    Mock fulltext indexing for testing.
+
+    Simulates MeiliSearch indexing without requiring a running instance.
+
+    Args:
+        input: Fulltext indexing input with document chunks
+
+    Returns:
+        Mock indexing result
+    """
+    activity.logger.info(
+        f"Mock indexing {len(input.chunks)} chunks",
+        extra={"document_id": input.document_id},
+    )
+
+    # Simulate processing with heartbeat
+    for i, chunk in enumerate(input.chunks):
+        if i % 10 == 0:
+            activity.heartbeat(f"Processing chunk {i}/{len(input.chunks)}")
+
+    index_name = os.getenv("MEILISEARCH_INDEX", "documents")
 
     return IndexFulltextOutput(
         indexed=True,
+        indexed_count=len(input.chunks),
         index_name=index_name,
     )

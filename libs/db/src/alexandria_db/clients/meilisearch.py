@@ -107,6 +107,7 @@ class MeiliSearchClient:
                         "description",
                         "summary",
                         "entities",
+                        "heading_context",  # Chunk's heading hierarchy for context
                     ]
                 )
 
@@ -116,6 +117,9 @@ class MeiliSearchClient:
                         "tenant_id",
                         "project_ids",
                         "document_type",
+                        "document_id",  # For filtering/grouping chunks by document
+                        "chunk_sequence",  # For ordering chunks within a document
+                        "chunk_type",  # For filtering by content type (text, code, etc.)
                         "status",
                         "language",
                         "created_at",

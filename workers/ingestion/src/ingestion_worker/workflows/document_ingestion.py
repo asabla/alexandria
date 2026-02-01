@@ -406,22 +406,43 @@ class IndexVectorOutput:
 
 @dataclass
 class IndexFulltextInput:
-    """Input for fulltext indexing activity."""
+    """Input for fulltext indexing activity.
+
+    Indexes document chunks (not whole documents) in MeiliSearch for
+    full-text keyword search. Each chunk becomes a separate MeiliSearch
+    document (~1KB) following best practices for optimal search performance.
+
+    Attributes:
+        document_id: Unique identifier for the document
+        tenant_id: Tenant identifier for multi-tenancy filtering
+        project_id: Optional project association
+        title: Document title (indexed with each chunk for context)
+        document_type: Type of document (pdf, docx, etc.)
+        chunks: List of document chunks to index
+        metadata: Additional metadata (language, entities, timestamps, etc.)
+    """
 
     document_id: str
     tenant_id: str
     project_id: str | None
     title: str
-    content: str
     document_type: str
+    chunks: list[ChunkInfo]
     metadata: dict[str, Any]
 
 
 @dataclass
 class IndexFulltextOutput:
-    """Output from fulltext indexing activity."""
+    """Output from fulltext indexing activity.
+
+    Attributes:
+        indexed: Whether indexing was successful
+        indexed_count: Number of chunks successfully indexed
+        index_name: Name of the MeiliSearch index used
+    """
 
     indexed: bool
+    indexed_count: int
     index_name: str
 
 
@@ -1019,8 +1040,8 @@ class DocumentIngestionWorkflow:
                     tenant_id=input.tenant_id,
                     project_id=input.project_id,
                     title=input.source_filename or f"Document {input.document_id}",
-                    content=parsed.content,
                     document_type=classification.document_type,
+                    chunks=self._chunks,
                     metadata=input.metadata,
                 ),
                 start_to_close_timeout=timedelta(minutes=5),
@@ -1104,8 +1125,8 @@ class DocumentIngestionWorkflow:
                             tenant_id=input.tenant_id,
                             project_id=input.project_id,
                             title=input.source_filename or f"Document {input.document_id}",
-                            content=parsed.content,
                             document_type=classification.document_type,
+                            chunks=self._chunks,
                             metadata=input.metadata,
                         ),
                         start_to_close_timeout=timedelta(minutes=5),

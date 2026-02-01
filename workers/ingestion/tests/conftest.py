@@ -139,6 +139,7 @@ def get_default_mock_results() -> MockActivityResults:
         },
         fulltext_indexed={
             "indexed": True,
+            "indexed_count": 2,
             "index_name": "documents",
         },
         entities={
