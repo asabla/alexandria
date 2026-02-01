@@ -13,6 +13,19 @@ from alexandria_db.clients import (
     Neo4jClient,
     MeiliSearchClient,
 )
+from alexandria_db.repositories import (
+    BaseRepository,
+    TenantScopedRepository,
+    SoftDeleteRepository,
+    TenantRepository,
+    ProjectRepository,
+    DocumentRepository,
+    ChunkRepository,
+    IngestionJobRepository,
+    EntityRepository,
+    EntityMentionRepository,
+    RelationshipRepository,
+)
 
 __version__ = "0.1.0"
 
@@ -28,4 +41,16 @@ __all__ = [
     "QdrantClient",
     "Neo4jClient",
     "MeiliSearchClient",
+    # Repositories
+    "BaseRepository",
+    "TenantScopedRepository",
+    "SoftDeleteRepository",
+    "TenantRepository",
+    "ProjectRepository",
+    "DocumentRepository",
+    "ChunkRepository",
+    "IngestionJobRepository",
+    "EntityRepository",
+    "EntityMentionRepository",
+    "RelationshipRepository",
 ]

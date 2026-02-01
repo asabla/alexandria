@@ -1,7 +1,12 @@
 """SQLAlchemy ORM models."""
 
 from alexandria_db.models.base import Base, TimestampMixin, UUIDMixin
-from alexandria_db.models.tenant import ProjectModel, TenantModel
+from alexandria_db.models.tenant import (
+    ProjectDocumentModel,
+    ProjectEntityModel,
+    ProjectModel,
+    TenantModel,
+)
 from alexandria_db.models.document import ChunkModel, DocumentModel, IngestionJobModel
 from alexandria_db.models.entity import EntityMentionModel, EntityModel, RelationshipModel
 
@@ -13,6 +18,8 @@ __all__ = [
     # Tenant
     "TenantModel",
     "ProjectModel",
+    "ProjectDocumentModel",
+    "ProjectEntityModel",
     # Document
     "DocumentModel",
     "ChunkModel",
