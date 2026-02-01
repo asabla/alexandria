@@ -84,6 +84,17 @@ section-order = ["future", "standard", "third-party", "first-party", "local-fold
     "SIM108",   # ternary operator (intentional for readability)
     "SIM113",   # enumerate for index (counter intentional for heartbeat tracking)
 ]
+# Workers and workflows have complex orchestration code
+"workers/**/worker.py" = [
+    "SIM105",   # contextlib.suppress (explicit try-except for clarity)
+]
+"workers/**/workflows/*.py" = [
+    "B904",     # raise from (complex exception handling)
+    "PLR0912",  # too many branches (workflow complexity)
+    "PLR0915",  # too many statements (workflow orchestration)
+    "SIM105",   # contextlib.suppress (explicit try-except for clarity)
+    "ARG002",   # unused method argument (reserved for future use)
+]
 
 # =============================================================================
 # MYPY - TYPE CHECKING

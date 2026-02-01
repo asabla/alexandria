@@ -5,27 +5,27 @@ This module provides the worker setup for running Temporal activities
 and workflows for document ingestion.
 """
 
-import asyncio
-import signal
-import sys
-from dataclasses import dataclass, field
-
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from ingestion_worker.workflows import DocumentIngestionWorkflow
 from ingestion_worker.activities import (
-    classify_document,
-    parse_document,
+    build_graph,
     chunk_document,
-    update_document_status,
-    generate_embeddings,
-    index_vector,
-    index_fulltext,
+    classify_document,
     extract_entities,
     extract_relationships,
-    build_graph,
+    generate_embeddings,
+    index_fulltext,
+    index_vector,
+    parse_document,
+    resolve_entities,
+    update_document_status,
 )
+from ingestion_worker.workflows import DocumentIngestionWorkflow
+
+import asyncio
+import signal
+from dataclasses import dataclass
 
 
 @dataclass
@@ -59,6 +59,7 @@ ACTIVITIES = [
     extract_entities,
     extract_relationships,
     build_graph,
+    resolve_entities,
 ]
 
 # All workflows to register

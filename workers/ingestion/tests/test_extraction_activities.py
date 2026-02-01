@@ -1941,3 +1941,222 @@ class TestBuildGraphActivity:
             result = await build_graph(input_data)
 
         assert result.nodes_created == 1
+
+
+# =============================================================================
+# Entity Resolution Tests
+# =============================================================================
+
+
+class TestNormalizeForComparison:
+    """Tests for _normalize_for_comparison function."""
+
+    def test_lowercase_and_strip(self):
+        """Test basic lowercasing and stripping."""
+        from ingestion_worker.activities.extraction_activities import (
+            _normalize_for_comparison,
+        )
+
+        assert _normalize_for_comparison("  John Smith  ") == "john smith"
+        assert _normalize_for_comparison("ACME CORPORATION") == "acme"
+
+    def test_removes_titles(self):
+        """Test removal of common titles."""
+        from ingestion_worker.activities.extraction_activities import (
+            _normalize_for_comparison,
+        )
+
+        assert _normalize_for_comparison("Dr. John Smith") == "john smith"
+        assert _normalize_for_comparison("Mr. Jones") == "jones"
+        assert _normalize_for_comparison("Mrs. Jane Doe") == "jane doe"
+
+    def test_removes_company_suffixes(self):
+        """Test removal of company suffixes."""
+        from ingestion_worker.activities.extraction_activities import (
+            _normalize_for_comparison,
+        )
+
+        assert _normalize_for_comparison("Acme Inc.") == "acme"
+        assert _normalize_for_comparison("Tech Corp") == "tech"
+        assert _normalize_for_comparison("Global LLC") == "global"
+        assert _normalize_for_comparison("British Ltd") == "british"
+
+    def test_removes_punctuation(self):
+        """Test punctuation removal."""
+        from ingestion_worker.activities.extraction_activities import (
+            _normalize_for_comparison,
+        )
+
+        assert _normalize_for_comparison("O'Brien") == "obrien"
+        assert _normalize_for_comparison("Smith-Jones") == "smithjones"
+
+    def test_collapses_whitespace(self):
+        """Test whitespace collapsing."""
+        from ingestion_worker.activities.extraction_activities import (
+            _normalize_for_comparison,
+        )
+
+        assert _normalize_for_comparison("John    Smith") == "john smith"
+
+
+class TestCalculateNameSimilarity:
+    """Tests for _calculate_name_similarity function."""
+
+    def test_exact_match(self):
+        """Test exact match returns 1.0."""
+        from ingestion_worker.activities.extraction_activities import (
+            _calculate_name_similarity,
+        )
+
+        assert _calculate_name_similarity("John Smith", "John Smith") == 1.0
+        # After normalization
+        assert _calculate_name_similarity("Dr. John Smith", "John Smith") == 1.0
+
+    def test_similar_names(self):
+        """Test similar names have high similarity."""
+        from ingestion_worker.activities.extraction_activities import (
+            _calculate_name_similarity,
+        )
+
+        # Same person, different formats
+        score = _calculate_name_similarity("John Smith", "John H. Smith")
+        assert score > 0.7
+
+        # Slight typo
+        score = _calculate_name_similarity("John Smith", "Jon Smith")
+        assert score > 0.7
+
+    def test_different_names(self):
+        """Test different names have low similarity."""
+        from ingestion_worker.activities.extraction_activities import (
+            _calculate_name_similarity,
+        )
+
+        score = _calculate_name_similarity("John Smith", "Jane Doe")
+        assert score < 0.5
+
+    def test_empty_names(self):
+        """Test handling of empty names."""
+        from ingestion_worker.activities.extraction_activities import (
+            _calculate_name_similarity,
+        )
+
+        assert _calculate_name_similarity("", "") == 0.0
+        assert _calculate_name_similarity("John", "") == 0.0
+
+
+class TestIsSubstringMatch:
+    """Tests for _is_substring_match function."""
+
+    def test_direct_substring(self):
+        """Test direct substring detection."""
+        from ingestion_worker.activities.extraction_activities import (
+            _is_substring_match,
+        )
+
+        assert _is_substring_match("John", "John Smith") is True
+        assert _is_substring_match("Acme", "Acme Corporation") is True
+
+    def test_abbreviation_match(self):
+        """Test abbreviation/initials detection."""
+        from ingestion_worker.activities.extraction_activities import (
+            _is_substring_match,
+        )
+
+        # IBM = International Business Machines
+        assert _is_substring_match("ibm", "International Business Machines") is True
+
+    def test_no_match(self):
+        """Test non-matching strings."""
+        from ingestion_worker.activities.extraction_activities import (
+            _is_substring_match,
+        )
+
+        assert _is_substring_match("John", "Jane") is False
+        assert _is_substring_match("ABC", "XYZ Corp") is False
+
+
+class TestFindCandidateMatches:
+    """Tests for _find_candidate_matches function."""
+
+    def test_finds_similar_entities(self):
+        """Test finding similar entities."""
+        from ingestion_worker.activities.extraction_activities import (
+            _find_candidate_matches,
+        )
+
+        entities = [
+            {"id": "1", "name": "John Smith", "entity_type": "person"},
+            {"id": "2", "name": "John H. Smith", "entity_type": "person"},
+            {"id": "3", "name": "Jane Doe", "entity_type": "person"},
+        ]
+
+        candidates = _find_candidate_matches(entities, 0.7)
+
+        # Should find John Smith ~ John H. Smith
+        assert len(candidates) >= 1
+        match_ids = {(c[0]["id"], c[1]["id"]) for c in candidates}
+        assert ("1", "2") in match_ids or ("2", "1") in match_ids
+
+    def test_respects_entity_type(self):
+        """Test that different entity types are not matched."""
+        from ingestion_worker.activities.extraction_activities import (
+            _find_candidate_matches,
+        )
+
+        entities = [
+            {"id": "1", "name": "Apple", "entity_type": "organization"},
+            {"id": "2", "name": "Apple", "entity_type": "location"},  # Different type
+        ]
+
+        candidates = _find_candidate_matches(entities, 0.9)
+
+        # Same name but different types should not be matched
+        assert len(candidates) == 0
+
+    def test_respects_threshold(self):
+        """Test similarity threshold is respected."""
+        from ingestion_worker.activities.extraction_activities import (
+            _find_candidate_matches,
+        )
+
+        entities = [
+            {"id": "1", "name": "John Smith", "entity_type": "person"},
+            {"id": "2", "name": "Jon Smythe", "entity_type": "person"},
+        ]
+
+        # High threshold - might not match
+        high_threshold = _find_candidate_matches(entities, 0.99)
+
+        # Lower threshold - should match
+        low_threshold = _find_candidate_matches(entities, 0.5)
+
+        assert len(low_threshold) >= len(high_threshold)
+
+
+class TestResolveEntitiesMockActivity:
+    """Tests for resolve_entities_mock activity."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_results(self):
+        """Test mock returns empty results."""
+        from ingestion_worker.activities.extraction_activities import (
+            resolve_entities_mock,
+        )
+        from ingestion_worker.workflows.document_ingestion import ResolveEntitiesInput
+
+        with patch("ingestion_worker.activities.extraction_activities.activity") as mock_activity:
+            mock_activity.logger = MagicMock()
+            mock_activity.heartbeat = MagicMock()
+
+            input_data = ResolveEntitiesInput(
+                tenant_id="tenant-123",
+                entity_type="person",
+            )
+
+            result = await resolve_entities_mock(input_data)
+
+        assert result.matches_found == 0
+        assert result.same_as_relationships_created == 0
+        assert result.entities_processed == 0
+        assert result.match_details == []

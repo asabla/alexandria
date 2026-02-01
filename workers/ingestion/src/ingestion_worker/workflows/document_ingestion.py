@@ -14,15 +14,14 @@ The workflow orchestrates all activities needed to process a document:
 9. Build knowledge graph (Neo4j)
 """
 
+from temporalio import workflow
+from temporalio.common import RetryPolicy
+
 import asyncio
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
 from typing import Any
-from uuid import UUID
-
-from temporalio import workflow
-from temporalio.common import RetryPolicy
 
 
 class DictObject:
@@ -54,7 +53,7 @@ class DictObject:
 
 # Import activity stubs - these will be defined later
 with workflow.unsafe.imports_passed_through():
-    import structlog
+    pass
 
 # Default retry policy for activities
 DEFAULT_RETRY_POLICY = RetryPolicy(
@@ -518,6 +517,39 @@ class BuildGraphOutput:
 
     nodes_created: int
     relationships_created: int
+
+
+@dataclass
+class EntityMatch:
+    """A matched pair of entities that may be the same real-world entity."""
+
+    entity1_id: str
+    entity1_name: str
+    entity2_id: str
+    entity2_name: str
+    similarity_score: float
+    match_reason: str  # e.g., "name_similarity", "llm_verified"
+
+
+@dataclass
+class ResolveEntitiesInput:
+    """Input for entity resolution activity."""
+
+    tenant_id: str
+    entity_type: str | None = None  # Filter by type (e.g., "person")
+    similarity_threshold: float = 0.85  # Min similarity to consider a match
+    use_llm_verification: bool = False  # Use LLM for ambiguous cases
+    max_entities: int = 1000  # Max entities to process (for batching)
+
+
+@dataclass
+class ResolveEntitiesOutput:
+    """Output from entity resolution activity."""
+
+    matches_found: int
+    same_as_relationships_created: int
+    entities_processed: int
+    match_details: list[EntityMatch]
 
 
 @dataclass

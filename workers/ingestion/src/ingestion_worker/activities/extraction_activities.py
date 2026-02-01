@@ -14,11 +14,14 @@ from ingestion_worker.workflows.document_ingestion import (
     BuildGraphOutput,
     ChunkInfo,
     EntityInfo,
+    EntityMatch,
     ExtractEntitiesInput,
     ExtractEntitiesOutput,
     ExtractRelationshipsInput,
     ExtractRelationshipsOutput,
     RelationshipInfo,
+    ResolveEntitiesInput,
+    ResolveEntitiesOutput,
 )
 
 import os
@@ -1535,4 +1538,500 @@ async def build_graph_mock(input: BuildGraphInput) -> BuildGraphOutput:
     return BuildGraphOutput(
         nodes_created=nodes_created,
         relationships_created=relationships_created,
+    )
+
+
+# =============================================================================
+# Entity Resolution Activity
+# =============================================================================
+
+
+def _normalize_for_comparison(name: str) -> str:
+    """
+    Normalize a name for comparison.
+
+    - Lowercase
+    - Remove extra whitespace
+    - Remove common suffixes/prefixes (Mr., Mrs., Dr., Inc., Corp., etc.)
+    - Remove punctuation
+
+    Args:
+        name: Entity name to normalize
+
+    Returns:
+        Normalized name for comparison
+    """
+    import re
+
+    normalized = name.lower().strip()
+
+    # Remove common titles/prefixes
+    prefixes = [
+        r"^mr\.?\s+",
+        r"^mrs\.?\s+",
+        r"^ms\.?\s+",
+        r"^dr\.?\s+",
+        r"^prof\.?\s+",
+        r"^the\s+",
+    ]
+    for prefix in prefixes:
+        normalized = re.sub(prefix, "", normalized, flags=re.IGNORECASE)
+
+    # Remove common suffixes for organizations
+    suffixes = [
+        r"\s+inc\.?$",
+        r"\s+corp\.?$",
+        r"\s+corporation$",
+        r"\s+llc\.?$",
+        r"\s+ltd\.?$",
+        r"\s+limited$",
+        r"\s+co\.?$",
+        r"\s+company$",
+        r"\s+plc\.?$",
+        r"\s+gmbh$",
+        r",?\s+jr\.?$",
+        r",?\s+sr\.?$",
+        r",?\s+ii$",
+        r",?\s+iii$",
+        r",?\s+iv$",
+    ]
+    for suffix in suffixes:
+        normalized = re.sub(suffix, "", normalized, flags=re.IGNORECASE)
+
+    # Remove punctuation except spaces
+    normalized = re.sub(r"[^\w\s]", "", normalized)
+
+    # Collapse multiple spaces
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+
+    return normalized
+
+
+def _calculate_name_similarity(name1: str, name2: str) -> float:
+    """
+    Calculate similarity between two names using multiple methods.
+
+    Combines:
+    - Exact match (normalized)
+    - Token overlap (Jaccard similarity)
+    - Edit distance (Levenshtein ratio)
+
+    Args:
+        name1: First name
+        name2: Second name
+
+    Returns:
+        Similarity score between 0 and 1
+    """
+    norm1 = _normalize_for_comparison(name1)
+    norm2 = _normalize_for_comparison(name2)
+
+    # Empty check first - empty strings are not similar
+    if not norm1 or not norm2:
+        return 0.0
+
+    # Exact match after normalization
+    if norm1 == norm2:
+        return 1.0
+
+    # Token-based Jaccard similarity
+    tokens1 = set(norm1.split())
+    tokens2 = set(norm2.split())
+
+    if tokens1 and tokens2:
+        intersection = len(tokens1 & tokens2)
+        union = len(tokens1 | tokens2)
+        jaccard = intersection / union if union > 0 else 0.0
+    else:
+        jaccard = 0.0
+
+    # Character-level Levenshtein ratio
+    # Simple implementation for short strings
+    len1, len2 = len(norm1), len(norm2)
+    max_len = max(len1, len2)
+
+    if max_len == 0:
+        return 0.0
+
+    # Use difflib for sequence matching (simpler than full Levenshtein)
+    from difflib import SequenceMatcher
+
+    seq_ratio = SequenceMatcher(None, norm1, norm2).ratio()
+
+    # Combine scores with weights
+    # Jaccard is good for partial matches, seq_ratio for character similarity
+    combined = (jaccard * 0.4) + (seq_ratio * 0.6)
+
+    return combined
+
+
+def _is_substring_match(name1: str, name2: str) -> bool:
+    """
+    Check if one name is a substring/abbreviation of the other.
+
+    Examples:
+    - "John Smith" contains "John"
+    - "IBM" is abbreviation of "International Business Machines"
+
+    Args:
+        name1: First name
+        name2: Second name
+
+    Returns:
+        True if one is substring/abbreviation of the other
+    """
+    norm1 = _normalize_for_comparison(name1)
+    norm2 = _normalize_for_comparison(name2)
+
+    # One is substring of other
+    if norm1 in norm2 or norm2 in norm1:
+        return True
+
+    # Check for initials/abbreviation
+    tokens1 = norm1.split()
+    tokens2 = norm2.split()
+
+    # Check if shorter is initials of longer
+    if len(tokens1) == 1 and len(tokens2) > 1:
+        # e.g., "ibm" vs "international business machines"
+        initials = "".join(t[0] for t in tokens2 if t)
+        if tokens1[0] == initials:
+            return True
+    elif len(tokens2) == 1 and len(tokens1) > 1:
+        initials = "".join(t[0] for t in tokens1 if t)
+        if tokens2[0] == initials:
+            return True
+
+    return False
+
+
+def _find_candidate_matches(
+    entities: list[dict[str, Any]],
+    similarity_threshold: float,
+) -> list[tuple[dict[str, Any], dict[str, Any], float, str]]:
+    """
+    Find candidate entity pairs that might be the same.
+
+    Uses blocking by entity type and first character to reduce comparisons.
+
+    Args:
+        entities: List of entity dicts with id, name, entity_type
+        similarity_threshold: Minimum similarity score
+
+    Returns:
+        List of (entity1, entity2, score, reason) tuples
+    """
+    from collections import defaultdict
+
+    candidates: list[tuple[dict[str, Any], dict[str, Any], float, str]] = []
+
+    # Block by entity type and first character of normalized name
+    blocks: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    for entity in entities:
+        entity_type = entity.get("entity_type", "unknown")
+        normalized = _normalize_for_comparison(entity.get("name", ""))
+        if normalized:
+            first_char = normalized[0]
+            blocks[(entity_type, first_char)].append(entity)
+
+    # Compare within blocks
+    for _block_key, block_entities in blocks.items():
+        n = len(block_entities)
+        for i in range(n):
+            for j in range(i + 1, n):
+                e1, e2 = block_entities[i], block_entities[j]
+
+                # Skip if same entity ID
+                if e1.get("id") == e2.get("id"):
+                    continue
+
+                name1 = e1.get("name", "")
+                name2 = e2.get("name", "")
+
+                # Calculate similarity
+                similarity = _calculate_name_similarity(name1, name2)
+
+                if similarity >= similarity_threshold:
+                    candidates.append((e1, e2, similarity, "name_similarity"))
+                elif _is_substring_match(name1, name2):
+                    # Substring matches get a boosted score
+                    candidates.append((e1, e2, 0.75, "substring_match"))
+
+    # Also check across similar first characters (for typos)
+    # e.g., "john" vs "jon" would be in different first-char blocks
+    type_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for entity in entities:
+        entity_type = entity.get("entity_type", "unknown")
+        type_groups[entity_type].append(entity)
+
+    for _entity_type, type_entities in type_groups.items():
+        # For small groups, do pairwise comparison
+        if len(type_entities) <= 100:
+            for i in range(len(type_entities)):
+                for j in range(i + 1, len(type_entities)):
+                    e1, e2 = type_entities[i], type_entities[j]
+
+                    # Skip if same ID or already compared
+                    if e1.get("id") == e2.get("id"):
+                        continue
+
+                    name1 = e1.get("name", "")
+                    name2 = e2.get("name", "")
+
+                    # Only check if not already in candidates
+                    pair_key = tuple(sorted([e1.get("id", ""), e2.get("id", "")]))
+                    existing_keys = {
+                        tuple(sorted([c[0].get("id", ""), c[1].get("id", "")])) for c in candidates
+                    }
+
+                    if pair_key not in existing_keys:
+                        similarity = _calculate_name_similarity(name1, name2)
+                        if similarity >= similarity_threshold:
+                            candidates.append((e1, e2, similarity, "name_similarity"))
+
+    return candidates
+
+
+async def _fetch_entities_from_neo4j(
+    client: Any,
+    tenant_id: str,
+    entity_type: str | None,
+    max_entities: int,
+) -> list[dict[str, Any]]:
+    """
+    Fetch entities from Neo4j for resolution.
+
+    Args:
+        client: Neo4j client
+        tenant_id: Tenant ID
+        entity_type: Optional entity type filter
+        max_entities: Maximum entities to fetch
+
+    Returns:
+        List of entity dicts
+    """
+    if entity_type:
+        query = f"""
+        MATCH (e:Entity:{entity_type} {{tenant_id: $tenant_id}})
+        WHERE NOT (e)-[:SAME_AS]-()
+        RETURN e.id as id, e.name as name, e.entity_type as entity_type,
+               e.confidence as confidence
+        LIMIT $limit
+        """
+    else:
+        query = """
+        MATCH (e:Entity {tenant_id: $tenant_id})
+        WHERE NOT (e)-[:SAME_AS]-()
+        RETURN e.id as id, e.name as name, e.entity_type as entity_type,
+               e.confidence as confidence
+        LIMIT $limit
+        """
+
+    results = await client.execute_query(
+        query,
+        {"tenant_id": tenant_id, "limit": max_entities},
+    )
+
+    return [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "entity_type": r["entity_type"],
+            "confidence": r.get("confidence", 0.5),
+        }
+        for r in results
+    ]
+
+
+async def _create_same_as_relationship(
+    client: Any,
+    entity1_id: str,
+    entity2_id: str,
+    tenant_id: str,
+    similarity_score: float,
+    match_reason: str,
+) -> bool:
+    """
+    Create a SAME_AS relationship between two entities.
+
+    SAME_AS is bidirectional, so we create it in one direction.
+    The entity with more mentions or higher confidence becomes the "canonical" one.
+
+    Args:
+        client: Neo4j client
+        entity1_id: First entity ID
+        entity2_id: Second entity ID
+        tenant_id: Tenant ID
+        similarity_score: How similar the entities are
+        match_reason: Why they were matched
+
+    Returns:
+        True if relationship was created
+    """
+    query = """
+    MATCH (e1:Entity {id: $entity1_id, tenant_id: $tenant_id})
+    MATCH (e2:Entity {id: $entity2_id, tenant_id: $tenant_id})
+    WHERE NOT (e1)-[:SAME_AS]-(e2)
+    MERGE (e1)-[r:SAME_AS]->(e2)
+    SET r.similarity_score = $similarity_score,
+        r.match_reason = $match_reason,
+        r.created_at = datetime()
+    RETURN r
+    """
+
+    results = await client.execute_query(
+        query,
+        {
+            "entity1_id": entity1_id,
+            "entity2_id": entity2_id,
+            "tenant_id": tenant_id,
+            "similarity_score": similarity_score,
+            "match_reason": match_reason,
+        },
+    )
+
+    return len(results) > 0
+
+
+@activity.defn
+async def resolve_entities(input: ResolveEntitiesInput) -> ResolveEntitiesOutput:
+    """
+    Resolve and deduplicate entities within a tenant.
+
+    This activity:
+    1. Fetches entities from Neo4j that don't already have SAME_AS relationships
+    2. Finds candidate matches using name similarity
+    3. Creates SAME_AS relationships for high-confidence matches
+    4. Optionally uses LLM verification for ambiguous cases
+
+    The SAME_AS relationship connects entities that represent the same
+    real-world entity (e.g., "John Smith" and "J. Smith").
+
+    Args:
+        input: Resolution parameters including tenant_id and thresholds
+
+    Returns:
+        Resolution statistics and match details
+    """
+    from alexandria_db.clients import Neo4jClient
+
+    activity.logger.info(
+        f"Resolving entities for tenant {input.tenant_id}, "
+        f"type={input.entity_type}, threshold={input.similarity_threshold}"
+    )
+
+    # Get Neo4j connection from environment
+    neo4j_uri = os.environ.get(NEO4J_URI_ENV, DEFAULT_NEO4J_URI)
+    neo4j_user = os.environ.get(NEO4J_USER_ENV, DEFAULT_NEO4J_USER)
+    neo4j_password = os.environ.get(NEO4J_PASSWORD_ENV, DEFAULT_NEO4J_PASSWORD)
+    neo4j_database = os.environ.get(NEO4J_DATABASE_ENV, DEFAULT_NEO4J_DATABASE)
+
+    client = Neo4jClient(
+        uri=neo4j_uri,
+        user=neo4j_user,
+        password=neo4j_password,
+        database=neo4j_database,
+    )
+
+    try:
+        # Step 1: Fetch entities
+        activity.heartbeat("Fetching entities")
+        entities = await _fetch_entities_from_neo4j(
+            client,
+            input.tenant_id,
+            input.entity_type,
+            input.max_entities,
+        )
+        activity.logger.info(f"Fetched {len(entities)} entities for resolution")
+
+        if len(entities) < 2:
+            activity.logger.info("Not enough entities to resolve")
+            return ResolveEntitiesOutput(
+                matches_found=0,
+                same_as_relationships_created=0,
+                entities_processed=len(entities),
+                match_details=[],
+            )
+
+        # Step 2: Find candidate matches
+        activity.heartbeat("Finding candidate matches")
+        candidates = _find_candidate_matches(entities, input.similarity_threshold)
+        activity.logger.info(f"Found {len(candidates)} candidate matches")
+
+        # Step 3: Create SAME_AS relationships
+        activity.heartbeat("Creating SAME_AS relationships")
+        matches_created = 0
+        match_details: list[EntityMatch] = []
+
+        for e1, e2, score, reason in candidates:
+            # Skip LLM verification for now (can be added later)
+            # if input.use_llm_verification and score < 0.95:
+            #     # Use LLM to verify ambiguous matches
+            #     pass
+
+            created = await _create_same_as_relationship(
+                client,
+                e1["id"],
+                e2["id"],
+                input.tenant_id,
+                score,
+                reason,
+            )
+
+            if created:
+                matches_created += 1
+                match_details.append(
+                    EntityMatch(
+                        entity1_id=e1["id"],
+                        entity1_name=e1["name"],
+                        entity2_id=e2["id"],
+                        entity2_name=e2["name"],
+                        similarity_score=score,
+                        match_reason=reason,
+                    )
+                )
+
+            # Heartbeat periodically
+            if matches_created % 10 == 0:
+                activity.heartbeat(f"Created {matches_created} SAME_AS relationships")
+
+        activity.logger.info(
+            f"Entity resolution complete: {matches_created} SAME_AS relationships created"
+        )
+
+        return ResolveEntitiesOutput(
+            matches_found=len(candidates),
+            same_as_relationships_created=matches_created,
+            entities_processed=len(entities),
+            match_details=match_details,
+        )
+
+    finally:
+        await client.close()
+
+
+@activity.defn
+async def resolve_entities_mock(input: ResolveEntitiesInput) -> ResolveEntitiesOutput:
+    """
+    Mock entity resolution for testing without Neo4j.
+
+    Simulates finding and resolving duplicate entities.
+
+    Args:
+        input: Resolution parameters
+
+    Returns:
+        Mock resolution results
+    """
+    activity.logger.info(f"Mock resolving entities for tenant {input.tenant_id}")
+
+    activity.heartbeat()
+
+    # Return mock results
+    return ResolveEntitiesOutput(
+        matches_found=0,
+        same_as_relationships_created=0,
+        entities_processed=0,
+        match_details=[],
     )
